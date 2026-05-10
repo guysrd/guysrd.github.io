@@ -170,17 +170,52 @@ The window between loading `epi` from the hlist and dereferencing
 on an arm64 GKI kernel:
 
 ```
-ffffffc08042fa64:  ldr x9, [x19, #176]    ; x9 = ep->refs.first
-ffffffc08042fa70:  sub x23, x9, #0x50     ; x23 = container_of(x9, epitem, fllink)
-    ...
-ffffffc08042fa80:  ldr x0, [x23, #72]     ; x0 = epi->ep  (the stale pointer)
-ffffffc08042fa88:  bl  ep_get_upwards_depth_proc  ; recurse into freed memory
-```
-
-Inside the recursive call, the first dereference of the freed pointer:
-
-```
-ffffffc08042fa48:  ldr x9, [x0, #168]     ; read ep->gen from freed slot
+ep_get_upwards_depth_proc:
+ffffffc08042fa2c:  paciasp
+ffffffc08042fa30:  stp  x29, x30, [sp, #-64]!
+ffffffc08042fa34:  str  x23, [sp, #16]
+ffffffc08042fa38:  stp  x22, x21, [sp, #32]
+ffffffc08042fa3c:  stp  x20, x19, [sp, #48]
+ffffffc08042fa40:  mov  x29, sp
+ffffffc08042fa44:  adrp x22, loop_check_gen      ; x22 = page of loop_check_gen
+ffffffc08042fa48:  ldr  x9, [x0, #168]           ; x9 = ep->gen  <-- CRASH SITE (+0x1c)
+ffffffc08042fa4c:  mov  x19, x0                  ; x19 = ep
+ffffffc08042fa50:  ldr  x8, [x22, #3600]         ; x8 = loop_check_gen
+ffffffc08042fa54:  cmp  x9, x8                   ; if (ep->gen == loop_check_gen)
+ffffffc08042fa58:  b.ne .Lno_cache               ;   cache miss, continue
+ffffffc08042fa5c:  ldrb w20, [x19, #184]         ;   return ep->loop_check_depth
+ffffffc08042fa60:  b    .Lreturn
+.Lno_cache:
+ffffffc08042fa64:  ldr  x9, [x19, #176]          ; x9 = ep->refs.first
+ffffffc08042fa68:  mov  w20, wzr                  ; result = 0
+ffffffc08042fa6c:  cbz  x9, .Lwrite              ; if (refs.first == NULL) skip loop
+ffffffc08042fa70:  sub  x23, x9, #0x50           ; x23 = container_of(x9, epitem, fllink)
+ffffffc08042fa74:  cbz  x23, .Lwrite             ; NULL check
+ffffffc08042fa78:  mov  w20, wzr                  ; result = 0
+ffffffc08042fa7c:  add  w21, w1, #0x1            ; w21 = depth + 1
+.Lloop:
+ffffffc08042fa80:  ldr  x0, [x23, #72]           ; x0 = epi->ep  (THE STALE POINTER)
+ffffffc08042fa84:  mov  w1, w21                   ; arg1 = depth + 1
+ffffffc08042fa88:  bl   ep_get_upwards_depth_proc ; RECURSE INTO FREED MEMORY
+ffffffc08042fa8c:  add  w9, w0, #0x1             ; w9 = recursive_result + 1
+ffffffc08042fa90:  ldr  x8, [x23, #80]           ; x8 = epi->fllink.next
+ffffffc08042fa94:  cmp  w20, w9                   ; if (result < recursive_result + 1)
+ffffffc08042fa98:  csinc w20, w20, w0, gt         ;   result = recursive_result + 1
+ffffffc08042fa9c:  cbz  x8, .Lwrite              ; if (next == NULL) break
+ffffffc08042faa0:  sub  x23, x8, #0x50           ; x23 = container_of(next, epitem, fllink)
+ffffffc08042faa4:  cbnz x23, .Lloop              ; continue loop
+.Lwrite:
+ffffffc08042faa8:  ldr  x8, [x22, #3600]         ; x8 = loop_check_gen
+ffffffc08042faac:  str  x8, [x19, #168]          ; ep->gen = loop_check_gen     (8 byte WRITE)
+ffffffc08042fab0:  strb w20, [x19, #184]          ; ep->loop_check_depth = result (1 byte WRITE)
+.Lreturn:
+ffffffc08042fab4:  mov  w0, w20                   ; return result
+ffffffc08042fab8:  ldp  x20, x19, [sp, #48]
+ffffffc08042fabc:  ldr  x23, [sp, #16]
+ffffffc08042fac0:  ldp  x22, x21, [sp, #32]
+ffffffc08042fac4:  ldp  x29, x30, [sp], #64
+ffffffc08042fac8:  autiasp
+ffffffc08042facc:  ret
 ```
 
 This is the crash site. From pstore after a successful trigger:
