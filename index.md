@@ -265,15 +265,25 @@ From `pahole`:
 
 ```
 struct eventpoll {
-    ...
-    struct file *              file;                 /*   160     8 */
-    u64                        gen;                  /*   168     8 */
-    struct hlist_head          refs;                 /*   176     8 */
-    u8                         loop_check_depth;     /*   184     1 */
-    ...
+	struct mutex               mtx;                  /*     0    48 */
+	wait_queue_head_t          wq;                   /*    48    24 */
+	wait_queue_head_t          poll_wait;            /*    72    24 */
+	struct list_head           rdllist;              /*    96    16 */
+	rwlock_t                   lock;                 /*   112     8 */
+	struct rb_root_cached      rbr;                  /*   120    16 */
+	struct epitem *            ovflist;              /*   136     8 */
+	struct wakeup_source *     ws;                   /*   144     8 */
+	struct user_struct *       user;                 /*   152     8 */
+	struct file *              file;                 /*   160     8 */
+	u64                        gen;                  /*   168     8 */
+	struct hlist_head          refs;                 /*   176     8 */
+	u8                         loop_check_depth;     /*   184     1 */
+	refcount_t                 refcount;             /*   188     4 */
+	unsigned int               napi_id;              /*   192     4 */
 
-    /* size: 200, cachelines: 4 */
+	/* size: 200, cachelines: 4, members: 15 */
 };
+```
 ```
 
 Look at the function again:
