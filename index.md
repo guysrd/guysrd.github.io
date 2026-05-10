@@ -380,9 +380,6 @@ The eventpoll stays valid for the entire read side critical section.
 The `struct rcu_head rcu` field (16 bytes) is added to `struct
 eventpoll` for the RCU callback infrastructure.
 
-I built both versions and tested them in QEMU. The kernel with
-`kfree_rcu`: 500 iterations of the trigger, zero crashes. The same
-kernel with `kfree` instead: crashes reliably within 200 iterations.
 
 ## Final Words
 
