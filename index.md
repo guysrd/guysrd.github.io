@@ -296,7 +296,7 @@ eventpoll fields.
 Whether this crashes or not depends entirely on one field:
 `eventpoll.refs`, the hlist head at offset 176 of the struct.
 
-From `pahole`:
+
 
 ```
 struct eventpoll {
