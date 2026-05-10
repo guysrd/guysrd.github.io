@@ -362,7 +362,7 @@ writes at fixed offsets, and recurses. Each level deposits
 interface. Without one, you need to think about how to turn this bug
 into a read primitive too, or find an independent infoleak elsewhere.
 
-## The cross cache wall
+## Cross cache
 
 A natural idea is to free the eventpoll's entire slab page back to the
 page allocator and reclaim it as a different slab cache, one where offset
