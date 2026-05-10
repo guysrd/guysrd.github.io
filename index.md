@@ -319,7 +319,6 @@ struct eventpoll {
 	/* size: 200, cachelines: 4, members: 15 */
 };
 ```
-```
 
 Look at the function again:
 
