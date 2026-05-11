@@ -2,7 +2,7 @@
 layout: default
 ---
 
-# A Use-After-Free in Linux Epoll: When an Optimization Opens a Door
+# When an Optimization Opens a Door
 
 ## TL;DR
 
