@@ -10,7 +10,7 @@ In March 2023, a Linux kernel patch optimized the `epoll` subsystem by replacing
 
 This post walks through how the bug came to exist, why it's a UAF (and not a different bug class), why exploiting it on a hardened kernel is much harder than it sounds, and the one-line fix that closed it.
 
-> *Target audience: kernel researchers who know what slabs and RCU are, but haven't worked inside `fs/eventpoll.c` before.*
+*This post assumes familiarity with the Linux kernel's memory allocator and RCU.*
 
 ---
 
