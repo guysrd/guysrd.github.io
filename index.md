@@ -4,9 +4,11 @@ layout: default
 
 # When an Optimization Opens a Door
 
+*An analysis of a use-after-free in Linux epoll, from the refactoring that introduced it to the fix that closed it.*
+
 ## TL;DR
 
-In March 2023, a Linux kernel patch optimized the `epoll` subsystem by replacing a global mutex with per-instance reference counting. The patch delivered a 60% throughput improvement on HTTP benchmarks. But the old mutex had been silently protecting code paths the authors didn't consider. The result: a use-after-free on a kernel pointer, reachable from any unprivileged process that can call `epoll_ctl`.
+In March 2023, a Linux kernel patch optimized the `epoll` subsystem by replacing a global mutex with per-instance reference counting. The patch delivered a 60% throughput improvement on HTTP benchmarks. But the old mutex had been silently protecting code paths the authors didn't consider. The result: a use-after-free on a kernel pointer, reachable from any unprivileged process that can call `epoll_ctl`. The fix ([commit 07712db80857](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/commit/?id=07712db80857d5d09ae08f3df85a708ecfc3b61f)) landed in 2026.
 
 This post walks through how the bug came to exist, why it's a UAF (and not a different bug class), why exploiting it on a hardened kernel is much harder than it sounds, and the one-line fix that closed it.
 
@@ -32,7 +34,7 @@ The interesting twist: an epoll fd is itself a file descriptor, so you can add a
 
 ## The Two Structures You Need to Know
 
-There are two kernel objects in play. A diagram first, then the words.
+There are two kernel objects in play.
 
 ![epoll data structures and the UAF](1.svg)
 
@@ -188,6 +190,8 @@ Finding a `kmalloc-256` object where an attacker can control offset 176 (to a ch
 
 ## The Fix
 
+[Commit 07712db80857](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/commit/?id=07712db80857d5d09ae08f3df85a708ecfc3b61f) ("eventpoll: defer struct eventpoll free to RCU grace period"):
+
 ```diff
  static void ep_free(struct eventpoll *ep)
  {
@@ -200,7 +204,7 @@ Finding a `kmalloc-256` object where an attacker can control offset 176 (to a ch
  }
 ```
 
-A 16-byte `struct rcu_head rcu` field is added to `struct eventpoll`. `kfree_rcu()` defers the free until the current RCU grace period ends. Since the walker is inside `rcu_read_lock()`, the grace period can't complete until it's done. The `eventpoll` stays valid for the entire traversal. Bug closed.
+A 16-byte `struct rcu_head rcu` field is added to `struct eventpoll`. `kfree_rcu()` defers the free until the current RCU grace period ends. Since the walker is inside `rcu_read_lock()`, the grace period can't complete until it's done. The `eventpoll` stays valid for the entire traversal.
 
 ---
 
