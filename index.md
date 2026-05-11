@@ -190,7 +190,7 @@ Finding a `kmalloc-256` object where an attacker can control offset 176 (to a ch
 
 ## The Fix
 
-[Commit 07712db80857](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/commit/?id=07712db80857d5d09ae08f3df85a708ecfc3b61f) ("eventpoll: defer struct eventpoll free to RCU grace period"):
+The bug was found and fixed by [Nicholas Carlini](https://nicholas.carlini.com/). [Commit 07712db80857](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/commit/?id=07712db80857d5d09ae08f3df85a708ecfc3b61f) ("eventpoll: defer struct eventpoll free to RCU grace period"):
 
 ```diff
  static void ep_free(struct eventpoll *ep)
