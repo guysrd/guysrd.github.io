@@ -2,49 +2,75 @@
 layout: default
 ---
 
-# The Refactoring That Opened a Door
+# A Use-After-Free in Linux Epoll: When an Optimization Opens a Door
 
-In March 2023, a performance optimization landed in the Linux kernel's
-epoll subsystem. The global `epmutex`, a single mutex that serialized
-all epoll topology operations, was replaced with per instance reference
-counting and a `dying` flag. The motivation was sound: under HTTP
-benchmark workloads, 58% of CPU time was spent in `osq_lock` contending
-on that single mutex. The patch delivered a 60% throughput improvement.
+## TL;DR
 
-But the old mutex had protected more than its authors realized.
+In March 2023, a Linux kernel patch optimized the `epoll` subsystem by replacing a global mutex with per-instance reference counting. The patch delivered a 60% throughput improvement on HTTP benchmarks. But the old mutex had been silently protecting code paths the authors didn't consider. The result: a use-after-free on a kernel pointer, reachable from any unprivileged process that can call `epoll_ctl`.
 
-## Epoll internals
+This post walks through how the bug came to exist, why it's a UAF (and not a different bug class), why exploiting it on a hardened kernel is much harder than it sounds, and the one-line fix that closed it.
 
-`epoll` is Linux's scalable I/O event notification mechanism. A process
-creates an epoll instance with `epoll_create`, adds file descriptors to
-it with `epoll_ctl(EPOLL_CTL_ADD)`, and waits for events with
-`epoll_wait`. Internally, the kernel maintains a `struct eventpoll` per
-instance and a `struct epitem` per monitored fd. These are linked
-through RB trees, hlists, and wait queues, forming a graph the kernel
-must walk to detect cycles and limit nesting depth when epoll instances
-monitor other epoll instances.
+> *Target audience: kernel researchers who know what slabs and RCU are, but haven't worked inside `fs/eventpoll.c` before.*
 
-Epoll instances can watch other epoll instances. When you call
-`epoll_ctl(EPOLL_CTL_ADD)` with a target that is itself an epoll fd,
-the kernel enters a validation path to check for cycles and measure
-nesting depth. Two functions do this walking:
+---
 
-- `reverse_path_check_proc` walks a monitored file's watcher list,
-  counting wakeup paths. For each watcher, it reads `epi->ep` to
-  reach that watcher's eventpoll. Recursive, up to `EP_MAX_NESTS` (4)
-  levels.
+## A 60-Second Primer on epoll
 
-- `ep_get_upwards_depth_proc` walks an eventpoll's `refs` hlist,
-  measuring chain depth going upward. Also reads `epi->ep` at each
-  step. This function both reads and writes: it deposits
-  `loop_check_gen` (a global counter) and a depth result into the
-  reached eventpoll.
+If you've used Linux servers, you've benefited from `epoll` without seeing it. It's the kernel's scalable I/O event notification system — the thing that lets nginx, redis, and node.js watch tens of thousands of sockets without blocking.
 
-Both walk linked lists under `rcu_read_lock`. Both dereference
-`epi->ep`:
+Three syscalls do all the work:
+
+- `epoll_create()` — make a new epoll instance, get back a file descriptor.
+- `epoll_ctl(ADD / MOD / DEL)` — start, modify, or stop watching some other file descriptor.
+- `epoll_wait()` — block until one of the watched fds has activity.
+
+The interesting twist: an epoll fd is itself a file descriptor, so you can add an epoll fd to *another* epoll instance. This creates a directed graph of epoll instances watching epoll instances. To prevent the kernel from looping forever — or from blowing the stack on a deeply nested chain — there is graph-walking validation code that runs inside `epoll_ctl(ADD)` to check for cycles and enforce a nesting depth limit.
+
+**That validation code is where the bug lives.**
+
+---
+
+## The Two Structures You Need to Know
+
+There are two kernel objects in play. A diagram first, then the words.
+
+
+**`struct eventpoll`** — one per epoll instance (one per `epoll_create()` call). Holds the wait queue, the RB tree of items it's currently watching, and — critically for us — `refs`, an hlist head linking every `epitem` that points *back at this instance from somewhere else*.
+
+**`struct epitem`** — one per (epoll instance, watched fd) pair. Holds `epi->ep`, a pointer back to its owning `eventpoll`. If the watched fd is itself an epoll, this `epitem` is also linked into *that* epoll's `refs` hlist via `fllink`.
+
+So when the kernel needs to walk the graph "upward" — from a child instance to all the parents watching it — it iterates the `refs` hlist, and for each `epitem` it finds, it follows `epi->ep` to reach a parent `eventpoll`. Then it recurses.
+
+That recursion — that *exact* dereference, `epi->ep`, inside that loop — is the UAF.
+
+---
+
+## The 2023 Refactoring
+
+Before March 2023, every `epoll_ctl(ADD)` involving the nested case acquired a single global mutex called `epmutex`. Under HTTP benchmark workloads, 58% of CPU time was spent in `osq_lock` contending on it.
+
+The patch did three things:
+
+1. Added a per-instance `refcount_t` to `struct eventpoll`.
+2. Added a `dying` flag to `struct epitem`.
+3. Renamed the now-narrow lock to `epnested_mutex`, held only when the graph actually needs walking.
+
+Result: **60% throughput improvement.** A genuine win.
+
+The patch authors carefully audited the race between two specific paths:
+
+- `ep_clear_and_put()` — runs when an epoll fd is closed.
+- `eventpoll_release_file()` — runs when a watched file is closed.
+
+That race is correctly handled by the new refcount + dying flag. **But there was a third path that used to be protected by the old global mutex, and now wasn't.** Nobody noticed for over a year.
+
+---
+
+## The Bug: a UAF on `epi->ep`
+
+Here's the vulnerable function. It's the "upward" graph walker, called during `epoll_ctl(ADD)` to compute nesting depth:
 
 ```c
-/* fs/eventpoll.c, called from ep_loop_check() */
 static int ep_get_upwards_depth_proc(struct eventpoll *ep, int depth)
 {
     int result = 0;
@@ -52,70 +78,26 @@ static int ep_get_upwards_depth_proc(struct eventpoll *ep, int depth)
 
     if (ep->gen == loop_check_gen)
         return ep->loop_check_depth;
+
     hlist_for_each_entry_rcu(epi, &ep->refs, fllink)
         result = max(result, ep_get_upwards_depth_proc(epi->ep, depth + 1) + 1);
+                                                       /* ^^^^^^^ UAF here */
     ep->gen = loop_check_gen;
     ep->loop_check_depth = result;
     return result;
 }
 ```
 
-```c
-static int reverse_path_check_proc(struct hlist_head *refs, int depth)
-{
-    int error = 0;
-    struct epitem *epi;
-
-    if (depth > EP_MAX_NESTS)
-        return -1;
-
-    hlist_for_each_entry_rcu(epi, refs, fllink) {
-        struct hlist_head *refs = &epi->ep->refs;
-        if (hlist_empty(refs))
-            error = path_count_inc(depth);
-        else
-            error = reverse_path_check_proc(refs, depth + 1);
-        if (error != 0)
-            break;
-    }
-    return error;
-}
-```
-
-This will matter.
-
-## The change
-
-The refactoring replaced `epmutex` with a per ep `refcount_t` on
-`struct eventpoll` and a `dying` flag on each `struct epitem`. The new
-scheme correctly handles the race between `ep_clear_and_put` (closing
-an epoll fd) and `eventpoll_release_file` (closing a file that epoll
-monitors). That interaction was carefully audited. But the graph
-walking functions above were not. They hold `epnested_mutex` (the
-renamed, narrower successor to `epmutex`). The new teardown path,
-`ep_clear_and_put`, does not. They share no lock.
-
-Here's the new teardown. It holds only the per instance `ep->mtx`:
+This runs under `rcu_read_lock()`. The `epitem` itself is safe to read — when an `epitem` is unlinked, it's freed via `call_rcu()`, so RCU keeps it alive for the duration of any read-side critical section:
 
 ```c
-static void ep_clear_and_put(struct eventpoll *ep)
-{
-    mutex_lock(&ep->mtx);
-
-    for (rbp = rb_first_cached(&ep->rbr); rbp; rbp = next) {
-        next = rb_next(rbp);
-        epi = rb_entry(rbp, struct epitem, rbn);
-        ep_remove_safe(ep, epi);
-        cond_resched();
-    }
-
-    mutex_unlock(&ep->mtx);
-    if (ep_refcount_dec_and_test(ep))
-        ep_free(ep);
-}
+/* The rcu read side, reverse_path_check_proc(), does not make use of the rbn field. */
+call_rcu(&epi->rcu, epi_rcu_free);
 ```
 
-And `ep_free` just frees the struct directly:
+The comment even acknowledges the RCU reader. But it only proves the `epitem`'s memory is alive. It says nothing about the `eventpoll` the `epitem` points to.
+
+Now look at the teardown for a closed epoll instance:
 
 ```c
 static void ep_free(struct eventpoll *ep)
@@ -123,287 +105,86 @@ static void ep_free(struct eventpoll *ep)
     mutex_destroy(&ep->mtx);
     free_uid(ep->user);
     wakeup_source_unregister(ep->ws);
-    kfree(ep);
+    kfree(ep);   /* immediate free — no RCU grace period */
 }
 ```
 
-The `dying` flag and refcount correctly handle the race between
-`ep_clear_and_put` and `eventpoll_release_file`. That race was audited.
-But the graph walking functions were not. They hold `epnested_mutex`.
-The teardown path does not. They share no lock.
+`kfree()`. Not `kfree_rcu()`. **The `eventpoll` is freed immediately.**
 
-## The bug
+### The rule that was missed
 
-It iterates the `refs` hlist under `rcu_read_lock`. For each epitem,
-it reads `epi->ep` and recurses.
+`call_rcu(epi)` keeps `epi` alive. It says nothing about `epi->ep`.
 
-The epitem itself is safe, it's freed via `call_rcu`:
+A pointer being safe to *read* is not the same as what it points to being safe to *use*. The reader is holding `epi` under RCU (good), reads `epi->ep` (still good — it's just a pointer load), then dereferences it (*not good*, because nothing keeps that target alive).
 
-```c
-/*
- * At this point it is safe to free the eventpoll item. Use the union
- * field epi->rcu, since we are trying to minimize the size of
- * 'struct epitem'. The rcu read side, reverse_path_check_proc(),
- * does not make use of the rbn field.
- */
-call_rcu(&epi->rcu, epi_rcu_free);
-```
+---
 
-The comment even acknowledges the RCU reader. But it only addresses
-whether the epitem's memory is valid. It says nothing about the
-eventpoll the epitem points to.
+## The Race, Visualized
 
-And `ep_free` uses `kfree(ep)`, not `call_rcu`, not `kfree_rcu`.
-The eventpoll is freed immediately, without waiting for the RCU grace
-period. If anyone is reading `epi->ep` under `rcu_read_lock` at that
-moment, they're reading freed memory.
-
-This is the rule `call_rcu` follows: it protects the object you call
-it on. It does not protect objects reachable through pointers in that
-object. `call_rcu(epi)` keeps `epi` alive. It says nothing about
-`epi->ep`.
-
-## Winning the race
-
-The window between loading `epi` from the hlist and dereferencing
-`epi->ep` is narrow. From the disassembly of `ep_get_upwards_depth_proc`
-on an arm64 GKI kernel:
-
-```
-ep_get_upwards_depth_proc:
-ffffffc08042fa2c:  paciasp
-ffffffc08042fa30:  stp  x29, x30, [sp, #-64]!
-ffffffc08042fa34:  str  x23, [sp, #16]
-ffffffc08042fa38:  stp  x22, x21, [sp, #32]
-ffffffc08042fa3c:  stp  x20, x19, [sp, #48]
-ffffffc08042fa40:  mov  x29, sp
-ffffffc08042fa44:  adrp x22, loop_check_gen      ; x22 = page of loop_check_gen
-ffffffc08042fa48:  ldr  x9, [x0, #168]           ; x9 = ep->gen  <-- CRASH SITE (+0x1c)
-ffffffc08042fa4c:  mov  x19, x0                  ; x19 = ep
-ffffffc08042fa50:  ldr  x8, [x22, #3600]         ; x8 = loop_check_gen
-ffffffc08042fa54:  cmp  x9, x8                   ; if (ep->gen == loop_check_gen)
-ffffffc08042fa58:  b.ne .Lno_cache               ;   cache miss, continue
-ffffffc08042fa5c:  ldrb w20, [x19, #184]         ;   return ep->loop_check_depth
-ffffffc08042fa60:  b    .Lreturn
-.Lno_cache:
-ffffffc08042fa64:  ldr  x9, [x19, #176]          ; x9 = ep->refs.first
-ffffffc08042fa68:  mov  w20, wzr                  ; result = 0
-ffffffc08042fa6c:  cbz  x9, .Lwrite              ; if (refs.first == NULL) skip loop
-ffffffc08042fa70:  sub  x23, x9, #0x50           ; x23 = container_of(x9, epitem, fllink)
-ffffffc08042fa74:  cbz  x23, .Lwrite             ; NULL check
-ffffffc08042fa78:  mov  w20, wzr                  ; result = 0
-ffffffc08042fa7c:  add  w21, w1, #0x1            ; w21 = depth + 1
-.Lloop:
-ffffffc08042fa80:  ldr  x0, [x23, #72]           ; x0 = epi->ep  (THE STALE POINTER)
-ffffffc08042fa84:  mov  w1, w21                   ; arg1 = depth + 1
-ffffffc08042fa88:  bl   ep_get_upwards_depth_proc ; RECURSE INTO FREED MEMORY
-ffffffc08042fa8c:  add  w9, w0, #0x1             ; w9 = recursive_result + 1
-ffffffc08042fa90:  ldr  x8, [x23, #80]           ; x8 = epi->fllink.next
-ffffffc08042fa94:  cmp  w20, w9                   ; if (result < recursive_result + 1)
-ffffffc08042fa98:  csinc w20, w20, w0, gt         ;   result = recursive_result + 1
-ffffffc08042fa9c:  cbz  x8, .Lwrite              ; if (next == NULL) break
-ffffffc08042faa0:  sub  x23, x8, #0x50           ; x23 = container_of(next, epitem, fllink)
-ffffffc08042faa4:  cbnz x23, .Lloop              ; continue loop
-.Lwrite:
-ffffffc08042faa8:  ldr  x8, [x22, #3600]         ; x8 = loop_check_gen
-ffffffc08042faac:  str  x8, [x19, #168]          ; ep->gen = loop_check_gen     (8 byte WRITE)
-ffffffc08042fab0:  strb w20, [x19, #184]          ; ep->loop_check_depth = result (1 byte WRITE)
-.Lreturn:
-ffffffc08042fab4:  mov  w0, w20                   ; return result
-ffffffc08042fab8:  ldp  x20, x19, [sp, #48]
-ffffffc08042fabc:  ldr  x23, [sp, #16]
-ffffffc08042fac0:  ldp  x22, x21, [sp, #32]
-ffffffc08042fac4:  ldp  x29, x30, [sp], #64
-ffffffc08042fac8:  autiasp
-ffffffc08042facc:  ret
-```
-
-This is the crash site. From pstore after a successful trigger:
-`pc : ep_get_upwards_depth_proc+0x1c/0xa4`.
-
-On a different CPU, hitting the window between `ldr x0, [x23, #72]`
-and the `bl` is nearly impossible. Cache coherence latency alone
-exceeds the gap.
-
-The technique that works is same CPU preemption. Pin both threads to
-the same core. The main thread enters the kernel and starts walking the
-hlist. A timer tick fires during the traversal. On a `PREEMPT_RCU`
-kernel, `rcu_read_lock` does not disable preemption. It just
-increments a counter. The scheduler preempts the main thread. The
-closer thread runs, frees the eventpoll, reclaims the slot, and
-yields. The main thread resumes and dereferences the stale pointer.
-
-For this to work, the traversal has to last long enough for a timer
-tick to happen. At `CONFIG_HZ=250`, a tick fires every 4 milliseconds.
-With 4,096 epoll parents, the traversal takes about 400 microseconds,
-too short. At 8,000 parents, it's around 2 milliseconds, which
-reliably overlaps a tick boundary. Hit rate: about 4% per iteration.
-
-There's one more subtlety. CFS (the Completely Fair Scheduler) tracks
-virtual runtime. A thread that busy waits while waiting for the signal
-accumulates high vruntime. When the tick fires, CFS might prefer the
-main thread (lower vruntime) over the closer, exactly the wrong
-priority. The counterintuitive fix: the closer *sleeps*.
-`usleep(1000)` freezes its vruntime. When it wakes, CFS sees a thread
-with almost no accumulated runtime and strongly prefers it over the
-main thread.
-
-Here's what the race looks like, with both threads on CPU 0:
-
-```
-Thread A (main, lower priority)         Thread B (closer, wakes with low vruntime)
-
-epoll_ctl(ep_a, ADD, ep_t)
-  ep_loop_check()
-    rcu_read_lock()
-    ep_get_upwards_depth_proc(ep_a, 0)
-      hlist iteration: load epi
-      epi->ep points to ep_b
-      |
-      |  <-- timer tick fires here
-      |  <-- scheduler preempts thread A
-      |
-      |                                 wakes from usleep (low vruntime, CFS prefers us)
-      |                                 close(ep_b_fd)
-      |                                   ep_clear_and_put(ep_b)
-      |                                     __ep_remove: hlist_del_rcu(epi)
-      |                                     call_rcu(epi)        -- epi deferred, safe
-      |                                   ep_free(ep_b)
-      |                                     kfree(ep_b)          -- ep freed NOW
-      |                                 kmalloc(N)               -- reclaims the slot
-      |                                 done, yields
-      |
-      resumes
-      ep_get_upwards_depth_proc(epi->ep)
-        epi->ep is the old address of ep_b
-        slot now contains the new object's data
-        reads ep->gen at offset 168
-        reads ep->refs.first at offset 176
-        if refs.first is NULL: writes loop_check_gen at offset 168
-                               writes 0 at offset 184
-        if refs.first is nonzero: follows it as a pointer...
-```
-
-The critical moment is the reclaim. The closer frees the eventpoll,
-then immediately allocates a new object in the same kmalloc bucket.
-SLUB's per CPU freelist is LIFO: last freed, first allocated. The new
-object lands in the exact slot the eventpoll just vacated. When the
-main thread resumes, it reads the new object's data where it expects
-eventpoll fields.
-
-## The refs.first problem
-
-Whether this crashes or not depends entirely on one field:
-`eventpoll.refs`, the hlist head at offset 176 of the struct.
+Two threads, both pinned to CPU 0. Thread A is inside `epoll_ctl(ADD)`, mid-walk through the graph. Thread B closes a different epoll instance at the wrong moment.
 
 
+`epi` is fine — RCU protects it. `epi->ep` points to a now-freed `eventpoll` slot, which has been instantly reused by a different allocation in the same slab cache. The function reads it as if it were still an `eventpoll`, follows pointers inside it, and writes back to it. **That's the use-after-free.**
 
-```
-struct eventpoll {
-	struct mutex               mtx;                  /*     0    48 */
-	wait_queue_head_t          wq;                   /*    48    24 */
-	wait_queue_head_t          poll_wait;            /*    72    24 */
-	struct list_head           rdllist;              /*    96    16 */
-	rwlock_t                   lock;                 /*   112     8 */
-	struct rb_root_cached      rbr;                  /*   120    16 */
-	struct epitem *            ovflist;              /*   136     8 */
-	struct wakeup_source *     ws;                   /*   144     8 */
-	struct user_struct *       user;                 /*   152     8 */
-	struct file *              file;                 /*   160     8 */
-	u64                        gen;                  /*   168     8 */
-	struct hlist_head          refs;                 /*   176     8 */
-	u8                         loop_check_depth;     /*   184     1 */
-	refcount_t                 refcount;             /*   188     4 */
-	unsigned int               napi_id;              /*   192     4 */
+---
 
-	/* size: 200, cachelines: 4, members: 15 */
-};
-```
+## Why This Race Is Hard to Trigger
 
-Look at the function again:
+The window between loading `epi` from the hlist and dereferencing `epi->ep` is a handful of instructions. Across two physical CPUs, cache coherence latency alone is longer than that gap — the cross-CPU race is essentially unwinnable.
 
-```c
-hlist_for_each_entry_rcu(epi, &ep->refs, fllink)
-    result = max(result, ep_get_upwards_depth_proc(epi->ep, depth + 1) + 1);
-ep->gen = loop_check_gen;
-ep->loop_check_depth = result;
-```
+The trick is **same-CPU preemption.**
 
-If `refs.first` is NULL, the hlist is empty. The loop body never
-executes. The function writes `loop_check_gen` at offset 168 and
-the depth byte at offset 184, then returns. No pointer is followed.
-No crash. A controlled, silent corruption.
+Under `PREEMPT_RCU` (default on Android/GKI kernels), `rcu_read_lock()` does *not* disable preemption. It just bumps a counter. So a timer tick during the walk can yield the CPU to the closer thread, even while the walker is mid-RCU.
 
-If `refs.first` is nonzero, the kernel treats it as a pointer to a
-`struct epitem` and follows a chain of dereferences through kernel
-memory. On a freed and reallocated slot, that value is whatever the
-new object has at offset 176. If it looks like a valid kernel address,
-the function recurses into it. If it doesn't, the kernel faults
-and panics.
+The numbers, on the tested target:
 
-This is the central challenge for exploitation. You need the reclaim
-object to have zero at offset 176. Not all objects do. On a kernel
-with `init_on_free=1`, a freshly freed slot is zeroed before reuse, so
-the window right after kfree has all zeros including offset 176. But if
-the new object writes nonzero data at that offset during its
-initialization, the zero is gone by the time the main thread reads it.
+- `CONFIG_HZ = 250` → a tick every 4 ms.
+- 4,096 epoll parents → walk takes ~400 µs → too short, rarely hits a tick boundary.
+- **8,000 epoll parents → walk takes ~2 ms → reliably overlaps a tick. Hit rate ~4% per iteration.**
 
-Finding an object that lets an attacker choose what will be at offset
-176 is not trivial. `kmalloc-256` does not have many general purpose
-objects with attacker controlled content at arbitrary offsets. Most
-kernel structs that land in this bucket have fixed layouts where offset
-176 corresponds to a pointer field or a lock, initialized to nonzero
-values by the kernel. Yet it is doable. The right reclaim object exists,
-and once found, the function becomes a multilevel read/write gadget
-through kernel memory: it follows `refs.first` as a pointer, reads and
-writes at fixed offsets, and recurses. Each level deposits
-`loop_check_gen` (a partially controllable counter) and a depth byte
-(zero). With an infoleak, this turns into an arbitrary read/write
-interface. Without one, you need to think about how to turn this bug
-into a read primitive too, or find an independent infoleak elsewhere.
+There's one more subtle scheduler trick. CFS prefers threads with low virtual runtime. If the closer thread busy-waits for the signal, it accumulates high vruntime and CFS *de*prioritizes it — the opposite of what we want. The counterintuitive fix: `usleep(1000)`. When the closer wakes, its vruntime is near zero, and CFS strongly prefers it over the walker. Exactly the priority order needed.
 
-## Cross cache
 
-A natural idea is to free the eventpoll's entire slab page back to the
-page allocator and reclaim it as a different slab cache, one where offset
-176 is guaranteed zero and offset 168 overlaps a critical field.
-Pipe buffer rings (`kmalloc-192`) or page table entries are classic
-cross cache targets.
+---
 
-This is not trivial on modern kernels, for several reasons.
+## Same-Cache vs. Cross-Cache
 
-First, `struct eventpoll` lives in `kmalloc-256`, which uses order 1
-slabs (8 KB, two contiguous pages). Pipe buffer rings live in
-`kmalloc-192`, which uses order 0 slabs (4 KB, one page). The page
-allocator's per CPU page cache (PCP) maintains separate freelists per
-page order. An order 1 page freed by kmalloc-256 cannot serve an
-order 0 allocation from kmalloc-192. The page sits on the PCP's order 1
-list until something else requests an order 1 page. On the devices
-tested, the PCP high watermark was 845 pages, far above what a single
-exploit attempt could fill. The freed pages never reached the buddy
-allocator where they could be split.
+Before going further into what to do with the freed slot, an obvious question every kernel exploit dev asks: can we cross-cache this? Free the slab page, reclaim it as something completely different — a pipe buffer ring, a page table page — where the layout is known and friendlier?
 
-Second, `init_on_free=1` zeros the slab slot immediately on `kfree`,
-before the object reaches the freelist. But the SLUB freelist pointer
-is written into the slot *after* the zeroing (at `s->offset`, which is
-offset 0 for `kmalloc-256` on tested kernels). Any cross cache reclaim
-object that gets allocated on the page would then be initialized by its
-own constructor, overwriting the zeroed bytes. The narrow window where
-offset 176 is still zero from `init_on_free` closes before the main
-thread can read it, because the cross cache path goes through PCP and
-buddy, which is orders of magnitude slower than same cache SLUB LIFO.
+**No, not easily, for three reasons:**
 
-Third, page table entries (the "dirty pagetable" technique) have the
-same order mismatch. PTE pages are order 0 on arm64. The freed
-order 1 kmalloc-256 slab cannot become a PTE page without a buddy
-split, which requires PCP overflow that does not happen in practice.
+1. **Order mismatch.** `struct eventpoll` is 200 bytes and lives in `kmalloc-256`, which uses **order-1 slabs (8 KB)**. Pipe buffer rings (`kmalloc-192`) and arm64 PTE pages are **order-0 (4 KB)**. The per-CPU page cache keeps separate freelists per order. An order-1 page won't satisfy an order-0 request unless it goes through the buddy allocator and gets split — and that only happens if the PCP overflows, which it doesn't in any realistic single-shot exploit (PCP high watermark was ~845 pages on tested devices).
 
-Same cache reclaim (staying within `kmalloc-256`) avoids all of these
-problems. SLUB LIFO on the same CPU gives immediate, reliable slot
-reuse. The challenge moves from "can we reclaim the slot" to "can we
-find a useful object in the same bucket."
+2. **`init_on_free` zeroing window is too narrow.** On hardened kernels, `init_on_free=1` zeros a slot the moment it's freed. There *is* a window where `eventpoll`'s offset 176 is zero. But the cross-cache path (PCP → buddy → new cache → constructor) is orders of magnitude slower than same-cache SLUB LIFO, and any reclaim object will re-initialize the bytes at offset 176 long before the walker resumes.
 
-## The fix
+3. **PTE cross-cache** ("dirty pagetable") fails for the same order-mismatch reason on arm64.
+
+**Same-cache reclaim — staying in `kmalloc-256` — sidesteps all of this.** SLUB's per-CPU freelist is LIFO: last freed, first allocated. An immediate `kmalloc(N)` on the same CPU reclaims the *exact slot* that just held the `eventpoll`. The hard part shifts from "can we reclaim the slot?" to "is there a useful `kmalloc-256` object whose layout, at the offsets the walker reads, is exploitable?"
+
+That's the real exploitation question.
+
+---
+
+## The `refs.first` Coin Flip
+
+The walker is going to touch these fields of `struct eventpoll`:
+
+| offset | field              | walker action     |
+|--------|--------------------|-------------------|
+| 168    | `gen`              | read, then write  |
+| 176    | `refs.first`       | read as pointer   |
+| 184    | `loop_check_depth` | write             |
+
+The bytes at **offset 176** in the reclaim object decide everything:
+
+- **If those bytes are zero** → hlist looks empty → walker skips the loop, writes `gen` and `depth`, returns. No crash. Silent corruption of 9 bytes (8 + 1) at offsets 168 and 184 of whatever object now lives there.
+- **If those bytes are nonzero** → walker dereferences them as a pointer to an `epitem`, then dereferences *that* epitem's `ep`, and recurses. On garbage, the kernel panics.
+
+Finding a `kmalloc-256` object where an attacker can control offset 176 (to a chosen pointer) *and* offset 168 (to a chosen value) turns this UAF into a recursive read/write gadget through kernel memory. Each recursion level deposits `loop_check_gen` (a partially attacker-influenced counter) and a zero byte at chosen offsets. Compose that with an info leak and you have arbitrary read/write. Compose it without one — that's the homework problem.
+
+---
+
+## The Fix
 
 ```diff
  static void ep_free(struct eventpoll *ep)
@@ -417,24 +198,16 @@ find a useful object in the same bucket."
  }
 ```
 
-`kfree_rcu` defers the free until after the current RCU grace period
-completes. The graph walking functions run under `rcu_read_lock`, which
-prevents the grace period from completing while they hold references.
-The eventpoll stays valid for the entire read side critical section.
-The `struct rcu_head rcu` field (16 bytes) is added to `struct
-eventpoll` for the RCU callback infrastructure.
+A 16-byte `struct rcu_head rcu` field is added to `struct eventpoll`. `kfree_rcu()` defers the free until the current RCU grace period ends. Since the walker is inside `rcu_read_lock()`, the grace period can't complete until it's done. The `eventpoll` stays valid for the entire traversal. Bug closed.
 
+---
 
-## Final Words
+## What This Story Is Really About
 
-The hardest part wasn't finding the bug. It was understanding epoll's
-synchronization model well enough to know which paths are actually
-unprotected. Wait queue locks serialize callbacks. File refcounts gate
-`ep_free`. `__fput` orders cleanup steps in a specific sequence. You
-have to internalize all of that before you can look at the RCU read
-side traversal of `epi->ep` and say with confidence: nothing protects
-this.
+The hardest part of finding this bug wasn't reading assembly or winning the race. It was internalizing epoll's synchronization model deeply enough to *know which paths aren't protected.* Wait queue locks serialize callbacks. File refcounts gate `ep_free`. `__fput` orders cleanup steps. Each of these protects something. You have to know all of them before you can confidently say: *nothing covers `epi->ep` here.*
 
-If you're up for a challenge, try exploiting this on a modern Android
-system from an untrusted app context. This bug gives you a write primitive. 
-Turning it into a reliable PE is a different problem.
+The 2023 refactoring is a textbook case of an optimization that audits the obvious races and misses the non-obvious one. The old `epmutex` was overbroad — that's exactly why removing it gave 60% — but "overbroad" also means *incidentally protective*. The graph walkers were unintentional beneficiaries of the global lock. When the lock narrowed, the protection vanished, and the path didn't even register as "now unsynchronized" in anybody's review.
+
+This is the lesson worth taking home: when you remove a lock that was held longer than it strictly needed to be, you are not just removing contention. You are removing protection from every reader who was, knowingly or not, depending on that lock to keep something else alive. Every one of them needs to be re-audited. Even the ones that don't touch the data the lock was nominally protecting.
+
+If you're up for it: this bug gives you a write primitive. Turning it into a reliable privilege escalation on a modern Android system from an untrusted app context is a different problem entirely. Have fun.
