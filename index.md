@@ -34,6 +34,7 @@ The interesting twist: an epoll fd is itself a file descriptor, so you can add a
 
 There are two kernel objects in play. A diagram first, then the words.
 
+![epoll data structures and the UAF](epoll-graph.svg)
 
 **`struct eventpoll`** — one per epoll instance (one per `epoll_create()` call). Holds the wait queue, the RB tree of items it's currently watching, and — critically for us — `refs`, an hlist head linking every `epitem` that points *back at this instance from somewhere else*.
 
