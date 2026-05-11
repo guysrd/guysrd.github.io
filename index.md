@@ -34,7 +34,7 @@ The interesting twist: an epoll fd is itself a file descriptor, so you can add a
 
 There are two kernel objects in play. A diagram first, then the words.
 
-![epoll data structures and the UAF](epoll-graph.svg)
+![epoll data structures and the UAF](1.svg)
 
 **`struct eventpoll`** — one per epoll instance (one per `epoll_create()` call). Holds the wait queue, the RB tree of items it's currently watching, and — critically for us — `refs`, an hlist head linking every `epitem` that points *back at this instance from somewhere else*.
 
@@ -124,6 +124,7 @@ A pointer being safe to *read* is not the same as what it points to being safe t
 
 Two threads, both pinned to CPU 0. Thread A is inside `epoll_ctl(ADD)`, mid-walk through the graph. Thread B closes a different epoll instance at the wrong moment.
 
+![The race timeline](2.svg)
 
 `epi` is fine — RCU protects it. `epi->ep` points to a now-freed `eventpoll` slot, which has been instantly reused by a different allocation in the same slab cache. The function reads it as if it were still an `eventpoll`, follows pointers inside it, and writes back to it. **That's the use-after-free.**
 
