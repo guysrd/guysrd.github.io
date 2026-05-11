@@ -8,7 +8,7 @@ layout: default
 
 ## TL;DR
 
-In March 2023, a Linux kernel patch optimized the `epoll` subsystem by replacing a global mutex with per-instance reference counting. The patch delivered a 60% throughput improvement on HTTP benchmarks. But the old mutex had been silently protecting code paths the authors didn't consider. The result: a use-after-free on a kernel pointer, reachable from any unprivileged process that can call `epoll_ctl`. The fix ([commit 07712db80857](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/commit/?id=07712db80857d5d09ae08f3df85a708ecfc3b61f)) landed in 2026.
+In March 2023, a Linux kernel patch optimized the `epoll` subsystem by replacing a global mutex with per-instance reference counting. The patch delivered a 60% throughput improvement on HTTP benchmarks. But the old mutex had been silently protecting code paths the authors didn't consider. The result: a use-after-free on a kernel pointer, reachable from any unprivileged process that can call `epoll_ctl`. The fix, by Nicholas Carlini, ([commit 07712db80857](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/commit/?id=07712db80857d5d09ae08f3df85a708ecfc3b61f)) landed in 2026.
 
 This post walks through how the bug came to exist, why it's a UAF (and not a different bug class), why exploiting it on a hardened kernel is much harder than it sounds, and the one-line fix that closed it.
 
