@@ -181,6 +181,6 @@ What stays with me about this bug isn't the race condition or the allocator inte
 
 The 2023 optimization is a clean example of a specific failure mode. The old `epmutex` was overbroad -- that's why removing it gave 60%. But overbroad locks are also incidentally protective. The graph walkers were unintentional beneficiaries. They didn't show up in anyone's audit of the refactoring because they don't touch the data the mutex was nominally guarding. They just follow pointers through structures that the mutex was keeping alive.
 
-I suspect this pattern is more common than we think. When you remove a lock that was held longer than it needed to be, you're not just removing contention. You're removing protection from every code path that was depending on that lock to keep something else alive, whether it knew it or not. Every one of those paths has to be re-audited. Even the ones -- especially the ones -- that don't obviously touch the protected data.
+I suspect this pattern is more common than we think. When you remove a lock that was held longer than it needed to be, you're not just removing contention. You're removing a guarantee that every code path inside that lock's scope was depending on, whether the authors knew it or not. Every one of those paths has to be re-audited. Especially the ones that don't obviously touch the protected data.
 
 The fix is [upstream](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/commit/?id=07712db80857d5d09ae08f3df85a708ecfc3b61f). Go update.
