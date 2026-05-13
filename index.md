@@ -175,3 +175,6 @@ The fix adds a `struct rcu_head` to `eventpoll`. `kfree_rcu()` defers the free u
 
 What stays with me about this bug isn't the race condition or the allocator internals. It's how much work it takes to understand which code paths in epoll are protected by what. Wait queue locks serialize callbacks file refcounts gate `ep_free`. `__fput` sequences cleanup. `call_rcu` defers `epitem` frees. Each mechanism covers something. You have to hold all of them in your head at once before you can point at `epi->ep` and be sure that nothing is keeping the target alive. I spent several days just on that part.
 
+
+I encourage anyone to try to exploit this on a modern Android system, it sounds fun and I'd be interested to see how u managed to
+get a stable arb read and write primitives based on this bug.
