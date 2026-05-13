@@ -6,7 +6,7 @@ layout: default
 
 In early 2026, Nicholas Carlini landed a one-line fix in `fs/eventpoll.c`. [Commit 07712db80857](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/commit/?id=07712db80857d5d09ae08f3df85a708ecfc3b61f) changed a `kfree()` to `kfree_rcu()`. The commit message says: "eventpoll: defer struct eventpoll free to RCU grace period." That's it.
 
-That one call fixed a use-after-free that had been reachable from any unprivileged process for over a year, on any Linux system running a 6.6 and aobe kernel with the affected optimization. That includes every Android device running a GKI kernel.
+That one call fixed a use-after-free that had been reachable from any unprivileged process for over a year, on any Linux system running a 6.6 and above kernel with the affected optimization. That includes every Android device running a GKI kernel.
 
 I spent a few weeks on a Pixel 10 pulling working on this bug and in the process learned more about CFS vruntime tricks, SLUB internals, and the ARM64 memory model than I probably needed to.
 
@@ -146,7 +146,7 @@ Anyone who's read a dirty pagetable writeup is going to ask: can you free the sl
 
 I spent some of time trying and I couldn't make it work, I am sure a skilled exploit writer will be able to do this.
 
-`kmalloc-256` uses order-1 slabs (8 KB). ARM64 PTE pages are order-0 (4 KB). These sit on different PCP freelists. The order-1 page freed from the slab cache won't satisfy an order-0 PTE request unless PCP overflows and buddy splits it. Arranging that overflow during the narrow race window turned out to be non-trivial. It was possible to perform the split w/o invoking the race, however, integrating both pieces together was never a succees.
+`kmalloc-256` uses order-1 slabs (8 KB). ARM64 PTE pages are order-0 (4 KB). These sit on different PCP freelists. The order-1 page freed from the slab cache won't satisfy an order-0 PTE request unless PCP overflows and buddy splits it. Arranging that overflow during the narrow race window turned out to be non-trivial. It was possible to perform the split w/o invoking the race, however, integrating both pieces together was never a succeess.
 
 The pieces work in isolation I verified this separately. Shaping 244 out of 250 slab pages go to buddy with 16 children forking and faulting 8 GB each, all available UNMOVABLE order-1 gets split for PTE allocations. The slab2buddy transition works, the buddy2PTE transition works, the problem is combining them with the race. The walker finishes in about 2 ms. The full cross-cache pipeline, SLUB discard, PCP drain, buddy insertion, PTE allocation with `__GFP_ZERO` takes on the order of 100 ms. The gen write needs to land on a physical page that has *already* completed the transition from slab to PTE, and those timelines don't overlap. I couldn't find a way to stretch the walk long enough without resorting to `SCHED_FIFO` or similar privileged tricks, which defeats the purpose.
 
