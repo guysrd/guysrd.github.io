@@ -40,9 +40,9 @@ The graph walker iterates `ep->refs`, follows `epi->ep` for each entry to reach 
 
 Before March 2023, every `epoll_ctl(ADD)` with a nested target acquired a global mutex called `epmutex`. Under HTTP benchmarks, 58% of CPU time was lost to contention on it.
 
-The optimization patch replaced `epmutex` with a per-instance `refcount_t`, added a `dying` flag to `struct epitem`, and narrowed the remaining lock to only be held during actual graph walks. Throughput went up 60%.
+A patch replaced `epmutex` with a per-instance `refcount_t`, added a `dying` flag to `struct epitem`, and narrowed the remaining lock to only be held during actual graph walks. Throughput went up 60%.
 
-The authors audited the race between the two obvious close paths: `ep_clear_and_put()` (closing an epoll fd) and `eventpoll_release_file()` (closing a watched fd). That race is correctly handled.
+The race between the two obvious close paths -- `ep_clear_and_put()` (closing an epoll fd) and `eventpoll_release_file()` (closing a watched fd) -- was carefully audited. It's correctly handled.
 
 But there was a third path. The graph walkers -- `ep_get_upwards_depth_proc` and `reverse_path_check_proc` -- iterate `ep->refs` under `rcu_read_lock()` while other threads tear down the structures they're pointing at. The old `epmutex` had been incidentally serializing this. Nobody noticed, because the walkers don't touch any of the data the mutex was nominally protecting. They just follow pointers through it.
 
