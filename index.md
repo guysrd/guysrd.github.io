@@ -2,7 +2,7 @@
 layout: default
 ---
 
-# The Epoll UAF
+# The epoll uaf
 
 In early 2026, Nicholas Carlini landed a one-line fix in `fs/eventpoll.c`. [Commit 07712db80857](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/commit/?id=07712db80857d5d09ae08f3df85a708ecfc3b61f) changed a `kfree()` to `kfree_rcu()`. The commit message says: "eventpoll: defer struct eventpoll free to RCU grace period." That's it.
 
@@ -12,7 +12,7 @@ I spent a few weeks on a Pixel 10 pulling working on this bug and in the process
 
 ---
 
-## epoll, Briefly
+## epoll in 2 seconds
 
 If you've run a Linux server you've used epoll indirectly. It's the kernel's scalable I/O notification mechanism the thing that lets nginx watch tens of thousands of sockets without blocking a thread per connection. 
 Three syscalls: `epoll_create()` makes an instance, `epoll_ctl()` adds or removes watched file descriptors, `epoll_wait()` blocks until something happens.
@@ -23,7 +23,7 @@ Epoll has a history of cves [CVE-2024-35984](https://lore.kernel.org/all/2024052
 
 ---
 
-## The Structures
+## Structures
 
 ![epoll data structures and the UAF](1.svg)
 
@@ -118,15 +118,31 @@ The CPU frequency governor matters. The Pixel's default governor throttles to 72
 
 ## What Gets Written
 
-When the walker reaches a freed `eventpoll`, it touches three offsets:
+When the walker reaches a freed `eventpoll`, what matters is the layout. Here's the `pahole` output for the target kernel:
 
-| offset | field              | size | what happens     |
-|--------|--------------------|------|------------------|
-| 168    | `gen`              | u64  | read, then write `loop_check_gen` |
-| 176    | `refs.first`       | ptr  | read as hlist pointer |
-| 184    | `loop_check_depth` | u8   | write 0          |
+```
+struct eventpoll {
+    struct mutex               mtx;                  /*     0    48 */
+    wait_queue_head_t          wq;                   /*    48    24 */
+    wait_queue_head_t          poll_wait;            /*    72    24 */
+    struct list_head           rdllist;              /*    96    16 */
+    rwlock_t                   lock;                 /*   112     8 */
+    struct rb_root_cached      rbr;                  /*   120    16 */
+    struct epitem *            ovflist;              /*   136     8 */
+    struct wakeup_source *     ws;                   /*   144     8 */
+    struct user_struct *       user;                 /*   152     8 */
+    struct file *              file;                 /*   160     8 */
+    u64                        gen;                  /*   168     8 */ /* read, then WRITE loop_check_gen */
+    struct hlist_head          refs;                 /*   176     8 */ /* READ as hlist pointer           */
+    u8                         loop_check_depth;     /*   184     1 */ /* WRITE 0                         */
+    refcount_t                 refcount;             /*   188     4 */
+    unsigned int               napi_id;              /*   192     4 */
 
-`struct eventpoll` is 200 bytes and lives in `kmalloc-256` (order-1 slabs, 32 objects per slab, `cpu_partial=52` on this device). With `init_on_free=1` set via kernel cmdline, interestingly not the config default the slot gets zeroed on free. Android adds custom padding at the end of each object therefore the structure is different from mainline linux a bit.
+    /* size: 200, cachelines: 4, members: 15 */
+};
+```
+
+200 bytes, lives in `kmalloc-256` (order-1 slabs, 32 objects per slab, `cpu_partial=52` on this device). With `init_on_free=1` set via kernel cmdline, interestingly not the config default the slot gets zeroed on free. Android adds custom padding at the end of each object therefore the structure is different from mainline linux a bit.
 
 What's at offset 176 when the walker arrives decides everything:
 
