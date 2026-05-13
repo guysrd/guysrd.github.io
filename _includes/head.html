@@ -1,0 +1,61 @@
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  {%- seo -%}
+  <link rel="stylesheet" href="{{ "/assets/main.css" | relative_url }}">
+  <link rel="stylesheet" href="{{ "/assets/css/dark.css" | relative_url }}">
+  {%- feed_meta -%}
+  {%- if jekyll.environment == 'production' and site.google_analytics -%}
+    {%- include google-analytics.html -%}
+  {%- endif -%}
+  <script>
+  (function(){
+    if (!localStorage.getItem('lightMode')) {
+      document.documentElement.className = 'dark-pending';
+    }
+  })();
+  document.addEventListener('DOMContentLoaded', function() {
+    var body = document.body;
+    var el = document.createElement('div');
+    el.className = 'theme-switch';
+    el.innerHTML =
+      '<div class="theme-switch-track">' +
+        '<div class="theme-switch-icon theme-switch-icon--light">' +
+          '<svg width="16" height="16" viewBox="0 0 24 24" fill="gold" stroke="gold" stroke-width="2">' +
+            '<circle cx="12" cy="12" r="5"/>' +
+            '<line x1="12" y1="1" x2="12" y2="3"/>' +
+            '<line x1="12" y1="21" x2="12" y2="23"/>' +
+            '<line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/>' +
+            '<line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>' +
+            '<line x1="1" y1="12" x2="3" y2="12"/>' +
+            '<line x1="21" y1="12" x2="23" y2="12"/>' +
+            '<line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/>' +
+            '<line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>' +
+          '</svg>' +
+        '</div>' +
+        '<div class="theme-switch-icon theme-switch-icon--dark">' +
+          '<svg width="16" height="16" viewBox="0 0 24 24" fill="#ddd" stroke="none">' +
+            '<path d="M21 12.79A9 9 0 1111.21 3 7 7 0 0021 12.79z"/>' +
+          '</svg>' +
+        '</div>' +
+      '</div>' +
+      '<div class="theme-switch-thumb"></div>';
+    body.appendChild(el);
+    function setDark() {
+      body.classList.add('dark');
+      el.classList.add('active');
+      localStorage.removeItem('lightMode');
+    }
+    function setLight() {
+      body.classList.remove('dark');
+      el.classList.remove('active');
+      localStorage.setItem('lightMode', 'true');
+    }
+    if (!localStorage.getItem('lightMode')) { setDark(); }
+    el.addEventListener('click', function() {
+      if (el.classList.contains('active')) { setLight(); } else { setDark(); }
+    });
+  });
+  </script>
+</head>
