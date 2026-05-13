@@ -171,13 +171,13 @@ Same-cache reclaim sidesteps this entirely. SLUB's per-CPU freelist is LIFO: las
  }
 ```
 
-A `struct rcu_head` is added to `eventpoll`. `kfree_rcu()` defers the free until the RCU grace period ends. Since the walker holds `rcu_read_lock()`, the grace period can't complete until it's done. Simple.
+The fix adds a `struct rcu_head` to `eventpoll`. `kfree_rcu()` defers the free until the RCU grace period ends. Since the walker holds `rcu_read_lock()`, the grace period can't complete until it's done.
 
 ---
 
 ## Closing Thoughts
 
-The part of this bug that stays with me isn't the race condition or the allocator internals. It's the amount of work required to understand which code paths in epoll are protected by what. Wait queue locks serialize callbacks. File refcounts gate `ep_free`. `__fput` sequences cleanup. `call_rcu` defers `epitem` frees. Each mechanism covers something. You have to hold all of them in your head at once before you can point at `epi->ep` and be sure that nothing is keeping the target alive. I spent several days just on that part, and I suspect most people who look at the code would give up before getting there.
+What stays with me about this bug isn't the race condition or the allocator internals. It's how much work it takes to understand which code paths in epoll are protected by what. Wait queue locks serialize callbacks. File refcounts gate `ep_free`. `__fput` sequences cleanup. `call_rcu` defers `epitem` frees. Each mechanism covers something. You have to hold all of them in your head at once before you can point at `epi->ep` and be sure that nothing is keeping the target alive. I spent several days just on that part, and I suspect most people who look at the code would give up before getting there.
 
 The 2023 optimization is a clean example of a specific failure mode. The old `epmutex` was overbroad -- that's why removing it gave 60%. But overbroad locks are also incidentally protective. The graph walkers were unintentional beneficiaries. They didn't show up in anyone's audit of the refactoring because they don't touch the data the mutex was nominally guarding. They just follow pointers through structures that the mutex was keeping alive.
 
