@@ -4,11 +4,11 @@ layout: default
 
 # The epoll uaf
 
-In early 2026, Nicholas Carlini landed a one-line fix in `fs/eventpoll.c`. [Commit 07712db80857](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/commit/?id=07712db80857d5d09ae08f3df85a708ecfc3b61f) changed a `kfree()` to `kfree_rcu()`. The commit message says: "eventpoll: defer struct eventpoll free to RCU grace period." That's it.
+In early 2026, Nicholas Carlini landed a one-line fix in `fs/eventpoll.c`. [Commit 07712db80857](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/commit/?id=07712db80857d5d09ae08f3df85a708ecfc3b61f) changed a `kfree()` to `kfree_rcu()`. The commit message says: "eventpoll: defer struct eventpoll free to RCU grace period." 
 
-That one call fixed a use-after-free that had been reachable from any unprivileged process for over a year, on any Linux system running a 6.6 and above kernel with the affected optimization. That includes every Android device running a GKI kernel.
+That one call fixed a uaf that had been reachable from any unprivileged process for a few years on any Linux / Android running a 6.6 and above kernel with the affected optimization. 
 
-I spent a few weeks on a Pixel 10 pulling working on this bug and in the process learned more about CFS vruntime tricks, SLUB internals, and the ARM64 memory model than I probably needed to.
+I spent a some time on a Pixel 10 working on this bug and in the process learned more about CFS vruntime tricks, SLUB internals, and the ARM64 memory model than I probably needed to.
 
 ---
 
@@ -19,7 +19,7 @@ Three syscalls: `epoll_create()` makes an instance, `epoll_ctl()` adds or remove
 
 Linux manages everything as file, so epoll fd is itself a file descriptor. You can add an epoll to another epoll. This creates a directed graph of instances watching instances, and the kernel has validation code inside `epoll_ctl(ADD)` that walks this graph to check for cycles and depth violations, that validation code is where the bug lives.
 
-Epoll has a history of cves [CVE-2024-35984](https://lore.kernel.org/all/20240527185634.056918751@linuxfoundation.org/) and [CVE-2025-37863](https://lore.kernel.org/all/20250714230744.3710270-3-sashal@kernel.org/) are just two (funny) exmaples.
+epoll has a history of cves [CVE-2024-35984](https://lore.kernel.org/all/20240527185634.056918751@linuxfoundation.org/) and [CVE-2025-37863](https://lore.kernel.org/all/20250714230744.3710270-3-sashal@kernel.org/) are just two (funny) exmaples.
 
 ---
 
@@ -51,6 +51,31 @@ However, there was a third path. The graph walkers `ep_get_upwards_depth_proc` a
 ## The Bug
 
 ```c
+static int ep_loop_check(struct eventpoll *ep, struct eventpoll *to)
+{
+	int depth, upwards_depth;
+
+	inserting_into = ep;
+	/*
+	 * Check how deep down we can get from @to, and whether it is possible
+	 * to loop up to @ep.
+	 */
+	depth = ep_loop_check_proc(to, 0);
+	if (depth > EP_MAX_NESTS)
+		return -1;
+	/* Check how far up we can go from @ep. */
+	rcu_read_lock();
+	upwards_depth = ep_get_upwards_depth_proc(ep, 0);
+	rcu_read_unlock();
+
+	return (depth+1+upwards_depth > EP_MAX_NESTS) ? -1 : 0;
+}
+
+..
+snip
+..
+
+
 static int ep_get_upwards_depth_proc(struct eventpoll *ep, int depth)
 {
     int result = 0;
@@ -61,14 +86,13 @@ static int ep_get_upwards_depth_proc(struct eventpoll *ep, int depth)
 
     hlist_for_each_entry_rcu(epi, &ep->refs, fllink)
         result = max(result, ep_get_upwards_depth_proc(epi->ep, depth + 1) + 1);
-                                                       /* ^^^^^^^ */
     ep->gen = loop_check_gen;
     ep->loop_check_depth = result;
     return result;
 }
 ```
 
-It runs under `rcu_read_lock()`. Each `epitem` is safe when unlinked, it's freed via `call_rcu()`, so RCU keeps it alive through the read-side critical section. There's even a comment in the source that acknowledges the RCU reader:
+`ep_get_upwards_depth_proc` runs under `rcu_read_lock()`. Each `epitem` is safe when unlinked, it's freed via `call_rcu()`, so RCU keeps it alive through the read-side critical section. There's even a comment in the source that acknowledges the RCU reader:
 
 ```c
 /* The rcu read side, reverse_path_check_proc(), does not make
@@ -97,7 +121,7 @@ The walker loads `epi->ep` a pointer read, then dereferences the target but that
 
 ---
 
-## Triggering It
+## Triggering it
 
 ![The race timeline](2.svg)
 
@@ -151,6 +175,10 @@ If it's **zero** (the `init_on_free` case), the hlist looks empty. The walker sk
 If it's **nonzero**, the walker follows it as a pointer to an `epitem`, computes `container_of()`, dereferences `epi->ep`, and recurses into wherever that points. This is an arbitrary write primitive.
 
 If you can grab the object where you control offset 176, you steer the recursion. Each level writes `loop_check_gen` (a global u64 counter that increments per `epoll_ctl(ADD)`) and a zero byte at fixed offsets from the pointer target. That's a constrained write primitive. What you do with it from there depends on what `kmalloc-256` object you use for reclaim, and how creative you're feeling.
+
+
+Note:
+There are other paths I did not include in this blog. One of them leads to `mutex_unlock` that if you are careful and brave enough to walk into. They require tremendous memory pressure and some of them might be fruitful.
 
 ---
 
