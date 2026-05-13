@@ -17,11 +17,9 @@ I spent a few weeks on a Pixel 10 pulling working on this bug and in the process
 If you've run a Linux server you've used epoll indirectly. It's the kernel's scalable I/O notification mechanism the thing that lets nginx watch tens of thousands of sockets without blocking a thread per connection. 
 Three syscalls: `epoll_create()` makes an instance, `epoll_ctl()` adds or removes watched file descriptors, `epoll_wait()` blocks until something happens.
 
-Linux manages everything as file, so epoll fd is itself a file descriptor. You can add an epoll to another epoll. This creates a directed graph of instances watching instances, and the kernel has validation code inside `epoll_ctl(ADD)` that walks this graph to check for cycles and depth violations.
+Linux manages everything as file, so epoll fd is itself a file descriptor. You can add an epoll to another epoll. This creates a directed graph of instances watching instances, and the kernel has validation code inside `epoll_ctl(ADD)` that walks this graph to check for cycles and depth violations, that validation code is where the bug lives.
 
-That validation code is where the bug lives.
-
-Epoll has a history of lifetime management bugs. [CVE-2024-35984](https://lore.kernel.org/all/20240527185634.056918751@linuxfoundation.org/) and [CVE-2025-37863](https://lore.kernel.org/all/20250714230744.3710270-3-sashal@kernel.org/) are two recent examples. The pattern is always the same: something gets freed while something else still holds a reference to it.
+Epoll has a history of cves [CVE-2024-35984](https://lore.kernel.org/all/20240527185634.056918751@linuxfoundation.org/) and [CVE-2025-37863](https://lore.kernel.org/all/20250714230744.3710270-3-sashal@kernel.org/) are just two (funny) exmaples.
 
 ---
 
@@ -177,4 +175,3 @@ The fix adds a `struct rcu_head` to `eventpoll`. `kfree_rcu()` defers the free u
 
 What stays with me about this bug isn't the race condition or the allocator internals. It's how much work it takes to understand which code paths in epoll are protected by what. Wait queue locks serialize callbacks file refcounts gate `ep_free`. `__fput` sequences cleanup. `call_rcu` defers `epitem` frees. Each mechanism covers something. You have to hold all of them in your head at once before you can point at `epi->ep` and be sure that nothing is keeping the target alive. I spent several days just on that part.
 
-The fix is [upstream](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/commit/?id=07712db80857d5d09ae08f3df85a708ecfc3b61f). Go update.
