@@ -107,7 +107,7 @@ I initially tried the obvious thing: two threads on different CPUs, one walking 
 
 What does work is same-CPU preemption. The device I was testing on (a Pixel 10, kernel 6.6.102) runs `CONFIG_PREEMPT=y` and `CONFIG_PREEMPT_RCU=y`, which means `rcu_read_lock()` just bumps a per-task counter -- it doesn't disable preemption. A timer tick during the walk can yield the CPU to the closer thread even though the walker is mid-RCU.
 
-The numbers (`CONFIG_HZ=250`, tick every 4 ms):
+Some numbers (`CONFIG_HZ=250`, tick every 4 ms):
 
 - 4,096 parents: walk takes ~400 us. Rarely overlaps a tick.
 - 8,000 parents: ~2 ms. Overlaps reliably. About 4% hit rate per attempt.
