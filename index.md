@@ -142,7 +142,7 @@ The CPU frequency governor matters. The Pixel's default governor throttles to 72
 
 ## What Gets Written
 
-When the walker reaches a freed `eventpoll`, what matters is the layout. Here's the `pahole` output for the target kernel:
+When the walker reaches a freed `eventpoll`, what matters is the layout. 
 
 ```
 struct eventpoll {
