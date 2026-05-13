@@ -134,7 +134,7 @@ struct eventpoll {
     struct file *              file;                 /*   160     8 */
     u64                        gen;                  /*   168     8 */ /* read, then WRITE loop_check_gen */
     struct hlist_head          refs;                 /*   176     8 */ /* READ as hlist pointer           */
-    u8                         loop_check_depth;     /*   184     1 */ /* WRITE 0                         */
+    u8                         loop_check_depth;     /*   184     1 */ /* WRITE 0 or a kernel pointer     */
     refcount_t                 refcount;             /*   188     4 */
     unsigned int               napi_id;              /*   192     4 */
 
