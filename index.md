@@ -21,7 +21,7 @@ Linux manages everything as file, so epoll fd is itself a file descriptor. You c
 
 That validation code is where the bug lives.
 
-Historically, epoll had several issues managing the lifetime of its objects. Over the last 8 years there were numerous vulnerabilities in the epoll code. Some of them were discovered by accident, others in the wild, all of them were fixed.
+Epoll has a history of lifetime management bugs. [CVE-2024-35984](https://lore.kernel.org/all/20240527185634.056918751@linuxfoundation.org/) and [CVE-2025-37863](https://lore.kernel.org/all/20250714230744.3710270-3-sashal@kernel.org/) are two recent examples. The pattern is always the same: something gets freed while something else still holds a reference to it.
 
 ---
 
