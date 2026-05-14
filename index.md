@@ -136,11 +136,11 @@ Just to give you a sense on numbers (`CONFIG_HZ=250`, tick every 4 ms):
 
 This next part gets a bit into scheduler internals, but it matters because without understanding this, the race will never fire.
 
-Linux's default scheduler is called CFS (Completely Fair Scheduler). The core idea: every thread gets a counter called *virtual runtime* (vruntime) that tracks how much CPU time it has consumed. When the kernel needs to decide which thread to run next, it picks the one with the *lowest* vruntime. A thread that's been running a lot has high vruntime and gets deprioritized. A thread that's been sleeping has low vruntime and gets preferred. It's "fair" -- everyone gets a turn.
+Linux 6.6 uses EEVDF (Earliest Eligible Virtual Deadline First), which replaced the older CFS scheduler. The details differ but the core concept we care about is the same: every thread has a counter called *virtual runtime* (vruntime) that tracks how much CPU time it has consumed. Threads with low vruntime get scheduling priority. A thread that's been running a lot has high vruntime and gets deprioritized. A thread that's been sleeping has low vruntime and gets preferred when it wakes up.
 
-This has a direct consequence for our race. We need the closer thread to preempt the walker mid-traversal. But if the closer busy-waits for the trigger signal (spinning in a tight loop checking a flag), it accumulates vruntime just as fast as the walker does. When the timer tick fires, CFS looks at both threads, sees roughly equal vruntime, and doesn't bother switching. The race never fires.
+This has a direct consequence for our race. We need the closer thread to preempt the walker mid-traversal. But if the closer busy-waits for the trigger signal (spinning in a tight loop checking a flag), it accumulates vruntime just as fast as the walker does. When the timer tick fires, the scheduler looks at both threads, sees roughly equal vruntime, and doesn't bother switching. The race never fires.
 
-The fix is counterintuitive: have the closer call `usleep(1000)` in a loop while waiting. Sleeping threads don't accumulate vruntime. When the walker sets the trigger flag, the closer wakes up with vruntime near zero while the walker's vruntime is high from running the traversal. CFS sees the gap and immediately preempts the walker to run the closer.
+The fix is counterintuitive: have the closer call `usleep(1000)` in a loop while waiting. Sleeping threads don't accumulate vruntime. When the walker sets the trigger flag, the closer wakes up with vruntime near zero while the walker's vruntime is high from running the traversal. The scheduler sees the gap and immediately preempts the walker to run the closer.
 
 ![CFS vruntime: busy-wait vs sleep](3.svg)
 
@@ -176,7 +176,7 @@ struct eventpoll {
 };
 ```
 
-200 bytes, lives in `kmalloc-256` (order-1 slabs, 32 objects per slab, `cpu_partial=52` on this device). With `init_on_free=1` set via kernel cmdline, interestingly not the config default the slot gets zeroed on free. Android adds custom padding at the end of each object therefore the structure is different from mainline linux a bit.
+200 bytes, lives in `kmalloc-256` (order-1 slabs, 32 objects per slab, `cpu_partial=52` on this device). With `init_on_free=1` is set by default on Frankel devices. Android adds custom padding at the end of each object therefore the structure is different from mainline linux a bit.
 
 What's at offset 176 when the walker arrives decides everything:
 
@@ -194,13 +194,11 @@ There are other paths I did not include in this blog. One of them leads to `mute
 
 ## Can You Cross-Cache This?
 
-Anyone who's read a dirty pagetable writeup is going to ask: can you free the slab page to buddy and grab it as a PTE page?
+I wanted to exploit this vuln as one primitive and wanted to do this using PTE corruption, my attempts failed, but this was my strategy. 
 
-I spent some of time trying and I couldn't make it work, I am sure a skilled exploit writer will be able to do this.
+The freed objects goes into `kmalloc-256` and uses order-1 slabs. ARM64 PTE pages are order-0 (4 KB). These sit on different PCP freelists. The order-1 page freed from the slab cache won't satisfy an order-0 PTE request unless PCP overflows and buddy splits it. Arranging that overflow during the narrow race window turned out to be non-trivial. It was possible to perform the split w/o invoking the race, however, integrating both pieces together was never a succeess.
 
-`kmalloc-256` uses order-1 slabs (8 KB). ARM64 PTE pages are order-0 (4 KB). These sit on different PCP freelists. The order-1 page freed from the slab cache won't satisfy an order-0 PTE request unless PCP overflows and buddy splits it. Arranging that overflow during the narrow race window turned out to be non-trivial. It was possible to perform the split w/o invoking the race, however, integrating both pieces together was never a succeess.
-
-These pieces work when isolated. Shaping 244 out of 250 slab pages go to buddy with 16 children forking and faulting 8 GB each, all available UNMOVABLE order-1 gets split for PTE allocations. The slab2buddy transition works, the buddy2PTE transition works, the problem is combining them with the race. The walker finishes in about 2 ms. The full cross-cache pipeline, SLUB discard, PCP drain, buddy insertion, PTE allocation with `__GFP_ZERO` takes on the order of 100 ms. The gen write needs to land on a physical page that has *already* completed the transition from slab to PTE, and those timelines don't overlap. I couldn't find a way to stretch the walk long enough without resorting to `SCHED_FIFO` or similar privileged tricks, which defeats the purpose.
+These pieces work separately. Shaping 244 out of 250 slab pages go to buddy with 16 children forking and faulting 8 GB each, all available UNMOVABLE order-1 gets split for PTE allocations. The slab2buddy transition works, the buddy2PTE transition works, the problem is combining them with the race. The walker finishes in about 2 ms. The full cross-cache pipeline, SLUB discard, PCP drain, buddy insertion, PTE allocation with `__GFP_ZERO` takes on the order of 100 ms. The gen write needs to land on a physical page that has *already* completed the transition from slab to PTE, and those timelines don't overlap. I couldn't find a way to stretch the walk long enough without resorting to `SCHED_FIFO` or similar privileged tricks, which defeats the purpose.
 
 Same-cache reclaim ignores this entirely. SLUB's per-CPU freelist is LIFO: last freed, first allocated. An immediate `kmalloc(256)` on the same CPU gets you the exact slot. The hard part is finding a `kmalloc-256` object with a useful layout at offsets 168 and 176.
 
