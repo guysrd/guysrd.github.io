@@ -6,10 +6,9 @@ permalink: /
 
 # The epoll uaf
 
-In early 2026, Nicholas Carlini landed a one-line fix in `fs/eventpoll.c`. [Commit 07712db80857](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/commit/?id=07712db80857d5d09ae08f3df85a708ecfc3b61f) changed a `kfree()` to `kfree_rcu()`. The commit message says: "eventpoll: defer struct eventpoll free to RCU grace period." 
-
+A couple of weeks ago Nicholas Carlini burned a vuln in `fs/eventpoll.c`. [Commit 07712db80857](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/commit/?id=07712db80857d5d09ae08f3df85a708ecfc3b61f) changed a `kfree()` to `kfree_rcu()`. The commit message says: "eventpoll: defer struct eventpoll free to RCU grace period." 
 That one call fixed a uaf that had been reachable from any unprivileged process for a few years on any Linux / Android running a 6.6 and above kernel with the affected optimization. 
-
+This post is the story about the bug itself, what it gives you and my (failed) attepmts at exploiting this on a real modern device.
 I spent a some time on a Pixel 10 working on this bug and in the process learned more about CFS vruntime tricks, SLUB internals, and the ARM64 memory model than I probably needed to.
 
 ---
@@ -44,9 +43,9 @@ Under HTTP benchmarks, 58% of CPU time was lost to contention on it.
 
 A patch replaced `epmutex` with a per-instance `refcount_t`, added a `dying` flag to `struct epitem`, and narrowed the remaining lock to only be held during actual graph walks. Throughput went up 60%.
 
-The race between the two obvious close paths `ep_clear_and_put()` (closing an epoll fd) and `eventpoll_release_file()` (closing a watched fd) was carefully audited. It's correctly handled.
+The race between the two obvious close paths `ep_clear_and_put()` (closing an epoll fd) and `eventpoll_release_file()` (closing a watched fd) was carefully audited. 
 
-However, there was a third path. The graph walkers `ep_get_upwards_depth_proc` and `reverse_path_check_proc` iterate `ep->refs` under `rcu_read_lock()` while other threads tear down the structures they're pointing at. The old `epmutex` had been incidentally serializing this. Nobody noticed, because the walkers don't touch any of the data the mutex was nominally protecting. They just follow pointers through it.
+However, there was a third path. The graph walkers `ep_get_upwards_depth_proc` and `reverse_path_check_proc` iterate `ep->refs` under `rcu_read_lock()` while other threads tear down the structures they're pointing at. The old `epmutex` had been incidentally serializing this. Nobody noticed, because the walkers don't touch any of the data the mutex was nominally protecting. They just follow pointers through it. This is where our bug resides.
 
 ---
 
@@ -127,18 +126,27 @@ The walker loads `epi->ep` a pointer read, then dereferences the target but that
 
 ![The race timeline](2.svg)
 
-I initially tried the obvious thing: two threads on different CPUs, one walking the graph, one closing an epoll fd. It doesn't work. The window between loading `epi` from the hlist and following `epi->ep` is a handful of ARM64 instructions. Cache coherence latency across physical cores is wider than the gap.
+I initially tried the obvious thing: two threads on different CPUs, one walking the graph, one closing an epoll fd. It doesn't work. The window between loading `epi` from the hlist and following `epi->ep` is a handful of ARM64 instructions.
+What does work is same-CPU preemption. The Frankel device I was testing on runs `CONFIG_PREEMPT=y` and `CONFIG_PREEMPT_RCU=y`, which means `rcu_read_lock()` just bumps a per-task counter it doesn't disable preemption. A timer tick during the walk can yield the CPU to the closer thread even though the walker is mid-RCU.
 
-What does work is same-CPU preemption. The device I was testing on (a Pixel 10, kernel 6.6.102) runs `CONFIG_PREEMPT=y` and `CONFIG_PREEMPT_RCU=y`, which means `rcu_read_lock()` just bumps a per-task counter -- it doesn't disable preemption. A timer tick during the walk can yield the CPU to the closer thread even though the walker is mid-RCU.
-
-Some numbers (`CONFIG_HZ=250`, tick every 4 ms):
+Just to give you a sense on numbers (`CONFIG_HZ=250`, tick every 4 ms):
 
 - 4,096 parents: walk takes ~400 us. Rarely overlaps a tick.
 - 8,000 parents: ~2 ms. Overlaps reliably. About 4% hit rate per attempt.
 
-There's a scheduler subtlety I wasted at least a day on. CFS prefers threads with low virtual runtime. If the closer busy-waits for the trigger signal, it accumulates vruntime and CFS actually *deprioritizes* it. The fix is counterintuitive: have the closer call `usleep(1000)` in a loop while waiting. When it wakes, its vruntime is near zero and CFS strongly prefers it over the walker. I only figured this out after dumping the vruntime values and staring at them for a while.
+This next part gets a bit into scheduler internals, but it matters because without understanding this, the race will never fire.
 
-The CPU frequency governor matters. The Pixel's default governor throttles to 729 MHz at idle. At that frequency the traversal timing shifts enough that the race stops firing entirely. 
+Linux's default scheduler is called CFS (Completely Fair Scheduler). The core idea: every thread gets a counter called *virtual runtime* (vruntime) that tracks how much CPU time it has consumed. When the kernel needs to decide which thread to run next, it picks the one with the *lowest* vruntime. A thread that's been running a lot has high vruntime and gets deprioritized. A thread that's been sleeping has low vruntime and gets preferred. It's "fair" -- everyone gets a turn.
+
+This has a direct consequence for our race. We need the closer thread to preempt the walker mid-traversal. But if the closer busy-waits for the trigger signal (spinning in a tight loop checking a flag), it accumulates vruntime just as fast as the walker does. When the timer tick fires, CFS looks at both threads, sees roughly equal vruntime, and doesn't bother switching. The race never fires.
+
+The fix is counterintuitive: have the closer call `usleep(1000)` in a loop while waiting. Sleeping threads don't accumulate vruntime. When the walker sets the trigger flag, the closer wakes up with vruntime near zero while the walker's vruntime is high from running the traversal. CFS sees the gap and immediately preempts the walker to run the closer.
+
+![CFS vruntime: busy-wait vs sleep](3.svg)
+
+I wasted at least a day on this before dumping the vruntime values and seeing the problem.
+
+One more thing: the CPU frequency governor matters. The Pixel's default governor throttles to 729 MHz at idle. At that frequency the traversal timing shifts enough that the race stops firing entirely.
 
 ---
 

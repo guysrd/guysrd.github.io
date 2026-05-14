@@ -1,0 +1,71 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 340" font-family="monospace" font-size="13">
+  <style>
+    text { fill: #333; }
+    @media (prefers-color-scheme: dark) {
+      text { fill: #ccc; }
+      rect.bg { fill: #111; }
+      line.axis { stroke: #666; }
+    }
+  </style>
+
+  <!-- title -->
+  <text x="360" y="22" text-anchor="middle" font-size="15" font-weight="bold">CFS vruntime: busy-wait vs sleep</text>
+
+  <!-- LEFT: busy-wait (bad) -->
+  <text x="180" y="50" text-anchor="middle" font-size="13" font-weight="bold">closer busy-waits (bad)</text>
+
+  <!-- time axis left -->
+  <line x1="40" y1="260" x2="340" y2="260" stroke="#888" stroke-width="1.5"/>
+  <text x="190" y="280" text-anchor="middle" font-size="11">time →</text>
+
+  <!-- vruntime axis left -->
+  <line x1="40" y1="70" x2="40" y2="260" stroke="#888" stroke-width="1.5"/>
+  <text x="15" y="165" text-anchor="middle" font-size="11" transform="rotate(-90,15,165)">vruntime</text>
+
+  <!-- walker vruntime (rises steadily) -->
+  <polyline points="40,240 100,210 160,180 220,150 280,120 340,90" fill="none" stroke="#d35" stroke-width="2.5"/>
+  <text x="345" y="88" font-size="11" fill="#d35">walker</text>
+
+  <!-- closer vruntime (also rises - busy spinning) -->
+  <polyline points="40,235 100,205 160,175 220,145 280,115 340,85" fill="none" stroke="#38a" stroke-width="2.5" stroke-dasharray="6,3"/>
+  <text x="345" y="78" font-size="11" fill="#38a">closer</text>
+
+  <!-- annotation -->
+  <text x="190" y="300" text-anchor="middle" font-size="11" fill="#888">both accumulate vruntime → CFS sees them as equal</text>
+  <text x="190" y="316" text-anchor="middle" font-size="11" fill="#888">→ no preemption, race never fires</text>
+
+  <!-- RIGHT: sleep (good) -->
+  <text x="540" y="50" text-anchor="middle" font-size="13" font-weight="bold">closer sleeps (good)</text>
+
+  <!-- time axis right -->
+  <line x1="400" y1="260" x2="700" y2="260" stroke="#888" stroke-width="1.5"/>
+  <text x="550" y="280" text-anchor="middle" font-size="11">time →</text>
+
+  <!-- vruntime axis right -->
+  <line x1="400" y1="70" x2="400" y2="260" stroke="#888" stroke-width="1.5"/>
+
+  <!-- walker vruntime (rises steadily) -->
+  <polyline points="400,240 460,210 520,180 580,150 640,120 700,90" fill="none" stroke="#d35" stroke-width="2.5"/>
+  <text x="705" y="88" font-size="11" fill="#d35">walker</text>
+
+  <!-- closer vruntime (flat while sleeping, then stays low) -->
+  <polyline points="400,240 460,240 520,240 540,240" fill="none" stroke="#38a" stroke-width="2.5" stroke-dasharray="6,3"/>
+  <text x="460" y="235" font-size="10" fill="#38a">💤 sleeping</text>
+  <!-- closer wakes at tick, low vruntime -->
+  <polyline points="540,240 545,238 580,230 640,220 700,210" fill="none" stroke="#38a" stroke-width="2.5"/>
+  <text x="705" y="208" font-size="11" fill="#38a">closer</text>
+
+  <!-- preemption arrow -->
+  <line x1="542" y1="150" x2="542" y2="242" stroke="#2a2" stroke-width="1.5" stroke-dasharray="4,3"/>
+  <polygon points="542,242 538,232 546,232" fill="#2a2"/>
+  <text x="555" y="195" font-size="11" fill="#2a2" font-weight="bold">preempt!</text>
+
+  <!-- gap annotation -->
+  <line x1="555" y1="148" x2="555" y2="240" stroke="none"/>
+  <text x="610" y="155" font-size="10" fill="#888">walker vruntime high</text>
+  <text x="610" y="168" font-size="10" fill="#888">closer vruntime low</text>
+  <text x="610" y="181" font-size="10" fill="#888">→ CFS preempts walker</text>
+
+  <text x="550" y="300" text-anchor="middle" font-size="11" fill="#888">closer sleeps → vruntime frozen at zero</text>
+  <text x="550" y="316" text-anchor="middle" font-size="11" fill="#888">→ wakes with priority, preempts walker</text>
+</svg>
