@@ -21,7 +21,7 @@ Three syscalls: `epoll_create()` makes an instance, `epoll_ctl()` adds or remove
 
 Linux manages everything as file, so epoll fd is itself a file descriptor. You can add an epoll to another epoll. This creates a directed graph of instances watching instances, and the kernel has validation code inside `epoll_ctl(ADD)` that walks this graph to check for cycles and depth violations, that validation code is where the bug lives.
 
-epoll has a history of cves [CVE-2024-35984](https://lore.kernel.org/all/20240527185634.056918751@linuxfoundation.org/) and [CVE-2025-37863](https://lore.kernel.org/all/20250714230744.3710270-3-sashal@kernel.org/) are just two (funny) exmaples.
+epoll has a history of cves [history of](https://lore.kernel.org/all/20240527185634.056918751@linuxfoundation.org/) [CVEs](https://lore.kernel.org/all/20250714230744.3710270-3-sashal@kernel.org/) however, their exploitation is not documented and is very scarce. 
 
 ---
 
