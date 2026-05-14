@@ -134,15 +134,15 @@ Just to give you a sense on numbers (`CONFIG_HZ=250`, tick every 4 ms):
 - 4,096 parents: walk takes ~400 us. Rarely overlaps a tick.
 - 8,000 parents: ~2 ms. Overlaps reliably. About 4% hit rate per attempt.
 
-This next part gets a bit into scheduler internals, but it matters because without understanding this, the race will never fire.
+This next part gets a bit into scheduler internals, but bear with me -- without understanding this, the race will never fire.
 
-Linux 6.6 uses EEVDF (Earliest Eligible Virtual Deadline First), which replaced the older CFS scheduler. The details differ but the core concept we care about is the same: every thread has a counter called *virtual runtime* (vruntime) that tracks how much CPU time it has consumed. Threads with low vruntime get scheduling priority. A thread that's been running a lot has high vruntime and gets deprioritized. A thread that's been sleeping has low vruntime and gets preferred when it wakes up.
+The Linux scheduler tracks how much CPU time each thread has consumed using a counter called *virtual runtime* (vruntime). Threads with low vruntime get priority. Threads that have been running a lot get deprioritized. The key detail: sleeping threads don't accumulate vruntime.
 
-This has a direct consequence for our race. We need the closer thread to preempt the walker mid-traversal. But if the closer busy-waits for the trigger signal (spinning in a tight loop checking a flag), it accumulates vruntime just as fast as the walker does. When the timer tick fires, the scheduler looks at both threads, sees roughly equal vruntime, and doesn't bother switching. The race never fires.
+This matters because we need the closer thread to preempt the walker mid-traversal. If the closer busy-waits for the trigger signal (spinning in a tight loop), it accumulates vruntime just as fast as the walker does. The scheduler sees them as equal and doesn't switch. The race never fires.
 
-The fix is counterintuitive: have the closer call `usleep(1000)` in a loop while waiting. Sleeping threads don't accumulate vruntime. When the walker sets the trigger flag, the closer wakes up with vruntime near zero while the walker's vruntime is high from running the traversal. The scheduler sees the gap and immediately preempts the walker to run the closer.
+The fix is counterintuitive: have the closer call `usleep(1000)` in a loop while waiting. When the walker sets the trigger flag, the closer wakes up with vruntime near zero. The walker's vruntime is high from running. The scheduler sees the gap and preempts the walker immediately.
 
-![CFS vruntime: busy-wait vs sleep](3.svg)
+![vruntime: busy-wait vs sleep](3.svg)
 
 I wasted at least a day on this before dumping the vruntime values and seeing the problem.
 
