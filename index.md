@@ -142,8 +142,6 @@ This matters because we need the closer thread to preempt the walker mid-travers
 
 The fix is counterintuitive: have the closer call `usleep(1000)` in a loop while waiting. When the walker sets the trigger flag, the closer wakes up with vruntime near zero. The walker's vruntime is high from running. The scheduler sees the gap and preempts the walker immediately.
 
-![vruntime: busy-wait vs sleep](3.svg)
-
 I wasted at least a day on this before dumping the vruntime values and seeing the problem.
 
 One more thing: the CPU frequency governor matters. The Pixel's default governor throttles to 729 MHz at idle. At that frequency the traversal timing shifts enough that the race stops firing entirely.
