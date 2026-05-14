@@ -134,15 +134,7 @@ Just to give you a sense on numbers (`CONFIG_HZ=250`, tick every 4 ms):
 - 4,096 parents: walk takes ~400 us. Rarely overlaps a tick.
 - 8,000 parents: ~2 ms. Overlaps reliably. About 4% hit rate per attempt.
 
-This next part gets a bit into scheduler internals, but bear with me -- without understanding this, the race will never fire.
-
-The Linux scheduler tracks how much CPU time each thread has consumed using a counter called *virtual runtime* (vruntime). Threads with low vruntime get priority. Threads that have been running a lot get deprioritized. The key detail: sleeping threads don't accumulate vruntime.
-
-This matters because we need the closer thread to preempt the walker mid-traversal. If the closer busy-waits for the trigger signal (spinning in a tight loop), it accumulates vruntime just as fast as the walker does. The scheduler sees them as equal and doesn't switch. The race never fires.
-
-The fix is counterintuitive: have the closer call `usleep(1000)` in a loop while waiting. When the walker sets the trigger flag, the closer wakes up with vruntime near zero. The walker's vruntime is high from running. The scheduler sees the gap and preempts the walker immediately.
-
-I wasted at least a day on this before dumping the vruntime values and seeing the problem.
+There's a scheduler subtlety that took me a while. If the closer thread busy-waits for the trigger signal, the scheduler treats it the same priority as the walker and never switches. The fix: have the closer `usleep(1000)` in a loop while waiting. Sleeping threads get scheduling priority when they wake -- the scheduler preempts the walker immediately.
 
 One more thing: the CPU frequency governor matters. The Pixel's default governor throttles to 729 MHz at idle. At that frequency the traversal timing shifts enough that the race stops firing entirely.
 
