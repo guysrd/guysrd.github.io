@@ -1,132 +1,87 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 780 520" font-family="monospace" font-size="12">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 400" font-family="monospace" font-size="12">
 
-  <!-- CROSS-CACHE PATH (top) -->
-  <text x="390" y="20" text-anchor="middle" font-size="14" font-weight="bold" fill="#333">cross-cache path (order-1 → order-0) ~100ms</text>
+  <!-- ============ CROSS-CACHE (left) ============ -->
+  <text x="160" y="24" text-anchor="middle" font-size="13" font-weight="bold" fill="#333">cross-cache (failed)</text>
 
-  <!-- kmalloc-256 slab (order-1) -->
-  <rect x="20" y="40" width="140" height="70" rx="4" fill="#e8e0f0" stroke="#666"/>
-  <text x="90" y="58" text-anchor="middle" font-size="11" font-weight="bold" fill="#333">kmalloc-256</text>
-  <text x="90" y="73" text-anchor="middle" font-size="10" fill="#555">order-1 slab</text>
-  <text x="90" y="88" text-anchor="middle" font-size="10" fill="#555">8KB, 32 objects</text>
-  <text x="90" y="103" text-anchor="middle" font-size="9" fill="#888">eventpoll lives here</text>
+  <!-- order-1 box -->
+  <rect x="30" y="50" width="120" height="40" rx="4" fill="#e8e0f0" stroke="#888"/>
+  <text x="90" y="66" text-anchor="middle" font-size="11" fill="#333">eventpoll</text>
+  <text x="90" y="80" text-anchor="middle" font-size="10" fill="#888">order-1 (8KB)</text>
 
-  <!-- arrow: slab → SLUB freelist -->
-  <line x1="160" y1="75" x2="195" y2="75" stroke="#666" stroke-width="1.5" marker-end="url(#arr)"/>
-  <text x="178" y="68" font-size="9" fill="#888">kfree</text>
+  <!-- down arrow -->
+  <line x1="90" y1="90" x2="90" y2="115" stroke="#888" stroke-width="1.5"/>
+  <polygon points="90,120 85,112 95,112" fill="#888"/>
+  <text x="105" y="108" font-size="9" fill="#888">kfree</text>
 
-  <!-- SLUB per-CPU freelist -->
-  <rect x="200" y="48" width="110" height="54" rx="4" fill="#d0e8f0" stroke="#666"/>
-  <text x="255" y="68" text-anchor="middle" font-size="11" font-weight="bold" fill="#333">SLUB</text>
-  <text x="255" y="82" text-anchor="middle" font-size="10" fill="#555">per-CPU freelist</text>
-  <text x="255" y="95" text-anchor="middle" font-size="9" fill="#888">cpu_partial=52</text>
+  <!-- SLUB -->
+  <rect x="30" y="122" width="120" height="30" rx="4" fill="#d0e8f0" stroke="#888"/>
+  <text x="90" y="142" text-anchor="middle" font-size="11" fill="#333">SLUB freelist</text>
 
-  <!-- arrow: SLUB → PCP -->
-  <line x1="310" y1="75" x2="345" y2="75" stroke="#666" stroke-width="1.5" marker-end="url(#arr)"/>
-  <text x="328" y="68" font-size="9" fill="#888">discard</text>
+  <!-- down arrow -->
+  <line x1="90" y1="152" x2="90" y2="172" stroke="#888" stroke-width="1.5"/>
+  <polygon points="90,177 85,169 95,169" fill="#888"/>
 
-  <!-- PCP order-1 list -->
-  <rect x="350" y="40" width="110" height="70" rx="4" fill="#f0e8d0" stroke="#666"/>
-  <text x="405" y="58" text-anchor="middle" font-size="11" font-weight="bold" fill="#333">PCP</text>
-  <text x="405" y="73" text-anchor="middle" font-size="10" fill="#555">order-1 list</text>
-  <text x="405" y="88" text-anchor="middle" font-size="9" fill="#d44">order-0 list</text>
-  <text x="405" y="103" text-anchor="middle" font-size="9" fill="#888">separate freelists!</text>
+  <!-- PCP -->
+  <rect x="30" y="179" width="120" height="30" rx="4" fill="#f0e8d0" stroke="#888"/>
+  <text x="90" y="199" text-anchor="middle" font-size="11" fill="#333">PCP order-1</text>
 
-  <!-- arrow: PCP → buddy -->
-  <line x1="460" y1="75" x2="495" y2="75" stroke="#666" stroke-width="1.5" marker-end="url(#arr)"/>
-  <text x="478" y="68" font-size="9" fill="#888">overflow</text>
+  <!-- down arrow -->
+  <line x1="90" y1="209" x2="90" y2="229" stroke="#888" stroke-width="1.5"/>
+  <polygon points="90,234 85,226 95,226" fill="#888"/>
 
-  <!-- buddy allocator -->
-  <rect x="500" y="40" width="110" height="70" rx="4" fill="#d8f0d0" stroke="#666"/>
-  <text x="555" y="58" text-anchor="middle" font-size="11" font-weight="bold" fill="#333">buddy</text>
-  <text x="555" y="73" text-anchor="middle" font-size="10" fill="#555">UNMOVABLE</text>
-  <text x="555" y="88" text-anchor="middle" font-size="10" fill="#555">zone free_area</text>
+  <!-- buddy -->
+  <rect x="30" y="236" width="120" height="30" rx="4" fill="#d8f0d0" stroke="#888"/>
+  <text x="90" y="256" text-anchor="middle" font-size="11" fill="#333">buddy split</text>
 
-  <!-- arrow: buddy → split -->
-  <line x1="610" y1="75" x2="645" y2="75" stroke="#666" stroke-width="1.5" marker-end="url(#arr)"/>
-  <text x="628" y="68" font-size="9" fill="#888">split</text>
+  <!-- down arrow -->
+  <line x1="90" y1="266" x2="90" y2="286" stroke="#888" stroke-width="1.5"/>
+  <polygon points="90,291 85,283 95,283" fill="#888"/>
 
-  <!-- PTE page (order-0) -->
-  <rect x="650" y="40" width="110" height="70" rx="4" fill="#f0d0d0" stroke="#d44"/>
-  <text x="705" y="58" text-anchor="middle" font-size="11" font-weight="bold" fill="#d44">PTE page</text>
-  <text x="705" y="73" text-anchor="middle" font-size="10" fill="#555">order-0 (4KB)</text>
-  <text x="705" y="88" text-anchor="middle" font-size="10" fill="#555">__GFP_ZERO</text>
-  <text x="705" y="103" text-anchor="middle" font-size="9" fill="#888">512 PTEs</text>
+  <!-- PTE -->
+  <rect x="30" y="293" width="120" height="40" rx="4" fill="#f0d0d0" stroke="#d44" stroke-width="2"/>
+  <text x="90" y="309" text-anchor="middle" font-size="11" fill="#d44">PTE page</text>
+  <text x="90" y="323" text-anchor="middle" font-size="10" fill="#888">order-0 (4KB)</text>
 
-  <!-- ORDER MISMATCH callout -->
-  <rect x="350" y="118" width="110" height="24" rx="3" fill="#fdd" stroke="#d44"/>
-  <text x="405" y="134" text-anchor="middle" font-size="10" font-weight="bold" fill="#d44">order mismatch</text>
-  <line x1="405" y1="110" x2="405" y2="118" stroke="#d44" stroke-width="1" stroke-dasharray="3,2"/>
+  <!-- timing label -->
+  <text x="200" y="80" font-size="11" fill="#d44" font-weight="bold">~100ms</text>
+  <line x1="175" y1="55" x2="175" y2="330" stroke="#d44" stroke-width="1" stroke-dasharray="4,3"/>
+  <text x="200" y="200" font-size="10" fill="#d44">walker is done</text>
+  <text x="200" y="214" font-size="10" fill="#d44">at 2ms, page</text>
+  <text x="200" y="228" font-size="10" fill="#d44">still in SLUB</text>
 
-  <!-- TIMING diagram -->
-  <text x="390" y="175" text-anchor="middle" font-size="14" font-weight="bold" fill="#333">the timing problem</text>
+  <!-- X mark -->
+  <text x="90" y="365" text-anchor="middle" font-size="20" fill="#d44">✗</text>
+  <text x="90" y="385" text-anchor="middle" font-size="10" fill="#d44">timelines don't overlap</text>
 
-  <!-- time axis -->
-  <line x1="50" y1="310" x2="740" y2="310" stroke="#888" stroke-width="1.5"/>
-  <text x="390" y="330" text-anchor="middle" font-size="11" fill="#888">time →</text>
+  <!-- ============ SAME-CACHE (right) ============ -->
+  <text x="520" y="24" text-anchor="middle" font-size="13" font-weight="bold" fill="#333">same-cache (works)</text>
 
-  <!-- tick marks -->
-  <line x1="50" y1="305" x2="50" y2="315" stroke="#888"/>
-  <text x="50" y="345" text-anchor="middle" font-size="9" fill="#888">0ms</text>
-  <line x1="188" y1="305" x2="188" y2="315" stroke="#888"/>
-  <text x="188" y="345" text-anchor="middle" font-size="9" fill="#888">2ms</text>
-  <line x1="740" y1="305" x2="740" y2="315" stroke="#888"/>
-  <text x="740" y="345" text-anchor="middle" font-size="9" fill="#888">~100ms</text>
+  <!-- freed slot -->
+  <rect x="430" y="50" width="180" height="40" rx="4" fill="#e8e0f0" stroke="#888"/>
+  <text x="520" y="66" text-anchor="middle" font-size="11" fill="#333">freed eventpoll slot</text>
+  <text x="520" y="80" text-anchor="middle" font-size="10" fill="#888">SLUB per-CPU LIFO</text>
 
-  <!-- walker bar -->
-  <rect x="50" y="200" width="138" height="28" rx="3" fill="#d35" opacity="0.8"/>
-  <text x="119" y="218" text-anchor="middle" font-size="11" fill="#fff" font-weight="bold">walker traversal</text>
-  <text x="119" y="240" text-anchor="middle" font-size="10" fill="#d35">gen write happens here</text>
-
-  <!-- cross-cache pipeline bar -->
-  <rect x="80" y="260" width="660" height="28" rx="3" fill="#38a" opacity="0.8"/>
-  <text x="410" y="278" text-anchor="middle" font-size="11" fill="#fff" font-weight="bold">SLUB → PCP → buddy → split → PTE alloc → __GFP_ZERO</text>
-
-  <!-- labels -->
-  <text x="30" y="218" text-anchor="end" font-size="10" fill="#d35">~2ms</text>
-  <text x="30" y="278" text-anchor="end" font-size="10" fill="#38a">~100ms</text>
-
-  <!-- gap annotation -->
-  <line x1="188" y1="228" x2="188" y2="258" stroke="#d44" stroke-width="1.5" stroke-dasharray="4,3"/>
-  <text x="200" y="250" font-size="10" fill="#d44" font-weight="bold">walker done</text>
-  <text x="200" y="262" font-size="9" fill="#d44">page still in SLUB</text>
-
-  <!-- SAME-CACHE PATH (bottom) -->
-  <text x="390" y="385" text-anchor="middle" font-size="14" font-weight="bold" fill="#333">same-cache path (SLUB LIFO) &lt;1μs</text>
-
-  <!-- kmalloc-256 slab -->
-  <rect x="120" y="400" width="160" height="55" rx="4" fill="#e8e0f0" stroke="#666"/>
-  <text x="200" y="420" text-anchor="middle" font-size="11" font-weight="bold" fill="#333">kmalloc-256 slot</text>
-  <text x="200" y="435" text-anchor="middle" font-size="10" fill="#555">freed eventpoll</text>
-  <text x="200" y="448" text-anchor="middle" font-size="9" fill="#888">per-CPU freelist (LIFO)</text>
-
-  <!-- arrow -->
-  <line x1="280" y1="427" x2="380" y2="427" stroke="#2a2" stroke-width="2.5" marker-end="url(#arrg)"/>
-  <text x="330" y="420" font-size="10" fill="#2a2" font-weight="bold">kmalloc(256)</text>
-  <text x="330" y="445" font-size="9" fill="#2a2">same CPU, same slot</text>
+  <!-- down arrow -->
+  <line x1="520" y1="90" x2="520" y2="125" stroke="#2a2" stroke-width="2"/>
+  <polygon points="520,130 515,122 525,122" fill="#2a2"/>
+  <text x="555" y="112" font-size="10" fill="#2a2">kmalloc(256)</text>
 
   <!-- reclaim object -->
-  <rect x="385" y="400" width="200" height="55" rx="4" fill="#d8f0d0" stroke="#2a2" stroke-width="2"/>
-  <text x="485" y="420" text-anchor="middle" font-size="11" font-weight="bold" fill="#333">reclaim object</text>
-  <text x="485" y="435" text-anchor="middle" font-size="10" fill="#555">attacker controls layout</text>
-  <text x="485" y="448" text-anchor="middle" font-size="9" fill="#2a2">offsets 168, 176, 184</text>
+  <rect x="430" y="133" width="180" height="55" rx="4" fill="#d8f0d0" stroke="#2a2" stroke-width="2"/>
+  <text x="520" y="152" text-anchor="middle" font-size="11" fill="#333" font-weight="bold">reclaim object</text>
+  <text x="520" y="168" text-anchor="middle" font-size="10" fill="#555">same slot, same CPU</text>
+  <text x="520" y="182" text-anchor="middle" font-size="10" fill="#2a2">controls offsets 168/176/184</text>
+
+  <!-- timing label -->
+  <text x="520" y="215" text-anchor="middle" font-size="11" fill="#2a2" font-weight="bold">&lt;1μs</text>
 
   <!-- checkmark -->
-  <text x="610" y="430" font-size="22" fill="#2a2">✓</text>
-  <text x="640" y="425" font-size="10" fill="#2a2">no order split</text>
-  <text x="640" y="438" font-size="10" fill="#2a2">no buddy</text>
-  <text x="640" y="451" font-size="10" fill="#2a2">no PCP</text>
+  <text x="520" y="260" text-anchor="middle" font-size="20" fill="#2a2">✓</text>
+  <text x="520" y="282" text-anchor="middle" font-size="10" fill="#2a2">no order split</text>
+  <text x="520" y="296" text-anchor="middle" font-size="10" fill="#2a2">no buddy, no PCP</text>
+  <text x="520" y="310" text-anchor="middle" font-size="10" fill="#2a2">exact slot reclaim</text>
 
-  <!-- bottom summary -->
-  <text x="390" y="490" text-anchor="middle" font-size="11" fill="#888">cross-cache: 5 stages, ~100ms, order mismatch</text>
-  <text x="390" y="506" text-anchor="middle" font-size="11" fill="#888">same-cache: 1 stage, &lt;1μs, exact slot</text>
+  <!-- divider -->
+  <line x1="350" y1="30" x2="350" y2="390" stroke="#ccc" stroke-width="1" stroke-dasharray="6,4"/>
 
-  <!-- arrowhead markers -->
-  <defs>
-    <marker id="arr" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
-      <polygon points="0 0, 8 3, 0 6" fill="#666"/>
-    </marker>
-    <marker id="arrg" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
-      <polygon points="0 0, 8 3, 0 6" fill="#2a2"/>
-    </marker>
-  </defs>
 </svg>
