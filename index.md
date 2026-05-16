@@ -179,7 +179,7 @@ Trivia: We also control and `gen` and `loop_check_depth` which allows to zero ou
 
 ---
 
-## Can You Cross-Cache This?
+## Can You Cross Cache This?
 
 I wanted to exploit this vuln as one shot primitive and wanted to do this using PTE corruption, my attempts failed, but this was my strategy. 
 If I were to infoleak, I'd use a different primitive and then solve everything pretty easily with `refs.first` as a pointer.
