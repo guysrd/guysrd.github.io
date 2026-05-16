@@ -6,10 +6,11 @@ permalink: /
 
 # The epoll uaf
 
-A couple of weeks ago Nicholas Carlini burned a vuln in `fs/eventpoll.c`. [Commit 07712db80857](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/commit/?id=07712db80857d5d09ae08f3df85a708ecfc3b61f) changed a `kfree()` to `kfree_rcu()`. The commit message says: "eventpoll: defer struct eventpoll free to RCU grace period." 
+A couple of weeks ago Nicholas Carlini burned an epoll uaf race in `fs/eventpoll.c`. [Commit 07712db80857](https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/commit/?id=07712db80857d5d09ae08f3df85a708ecfc3b61f) changed a `kfree()` to `kfree_rcu()`. The commit message says: "eventpoll: defer struct eventpoll free to RCU grace period." 
+
 That one call fixed a uaf that had been reachable from any unprivileged process for a few years on any Linux / Android running a 6.6 and above kernel with the affected optimization. 
 This post is the story about the bug itself, what it gives you and my (failed) attepmts at exploiting this on a real modern device.
-I spent a some time on a Pixel 10 working on this bug and in the process learned more about CFS vruntime tricks, SLUB internals, and the ARM64 memory model than I probably needed to.
+I spent a bit on a Pixel 10 working on this bug and in the process learned more about CFS vruntime tricks, SLUB internals, and the ARM64 memory model than I probably needed to.
 
 ---
 
@@ -43,9 +44,7 @@ Under HTTP benchmarks, 58% of CPU time was lost to contention on it.
 
 A patch replaced `epmutex` with a per-instance `refcount_t`, added a `dying` flag to `struct epitem`, and narrowed the remaining lock to only be held during actual graph walks. Throughput went up 60%.
 
-The race between the two obvious close paths `ep_clear_and_put()` (closing an epoll fd) and `eventpoll_release_file()` (closing a watched fd) was carefully audited. 
-
-However, there was a third path. The graph walkers `ep_get_upwards_depth_proc` and `reverse_path_check_proc` iterate `ep->refs` under `rcu_read_lock()` while other threads tear down the structures they're pointing at. The old `epmutex` had been incidentally serializing this. Nobody noticed, because the walkers don't touch any of the data the mutex was nominally protecting. They just follow pointers through it. This is where our bug resides.
+The race happens in the graph walkers `ep_get_upwards_depth_proc` and `reverse_path_check_proc`. Both functions iterate `ep->refs` under `rcu_read_lock()` while other threads tear down the structures they're pointing at. The old `epmutex` had been incidentally serializing this, but the new optimization was too open and nobody noticed the walkers race. The reason is they don't touch any of the data the mutex was nominally protecting, they were only reading data.
 
 ---
 
@@ -126,7 +125,7 @@ The walker loads `epi->ep` a pointer read, then dereferences the target but that
 
 ![The race timeline](2.svg)
 
-I initially tried the obvious thing: two threads on different CPUs, one walking the graph, one closing an epoll fd. It doesn't work. The window between loading `epi` from the hlist and following `epi->ep` is a handful of ARM64 instructions.
+I initially tried two threads on different CPUs, one walking the graph one closing an epoll fd, it didn't work. The window between loading `epi` from the hlist and following `epi->ep` is a handful of ARM64 instructions.
 What does work is same-CPU preemption. The Frankel device I was testing on runs `CONFIG_PREEMPT=y` and `CONFIG_PREEMPT_RCU=y`, which means `rcu_read_lock()` just bumps a per-task counter it doesn't disable preemption. A timer tick during the walk can yield the CPU to the closer thread even though the walker is mid-RCU.
 
 Just to give you a sense on numbers (`CONFIG_HZ=250`, tick every 4 ms):
@@ -134,15 +133,13 @@ Just to give you a sense on numbers (`CONFIG_HZ=250`, tick every 4 ms):
 - 4,096 parents: walk takes ~400 us. Rarely overlaps a tick.
 - 8,000 parents: ~2 ms. Overlaps reliably. About 4% hit rate per attempt.
 
-There's a scheduler subtlety that took me a while. If the closer thread busy-waits for the trigger signal, the scheduler treats it the same priority as the walker and never switches. The fix: have the closer `usleep(1000)` in a loop while waiting. Sleeping threads get scheduling priority when they wake -- the scheduler preempts the walker immediately.
+If the closer thread busy waits for the trigger signal, the scheduler treats it the same priority as the walker and never switches, but if you add the closer `usleep(1000)` in a loop while waiting. Sleeping threads get scheduling priority when they wake and the scheduler preempts the walker immediately.
 
-One more thing: the CPU frequency governor matters. The Pixel's default governor throttles to 729 MHz at idle. At that frequency the traversal timing shifts enough that the race stops firing entirely.
+The Pixel's default governor throttles to 729 MHz at idle, at that frequency the traversal timing shifts enough that the race stops firing entirely :')
 
 ---
 
 ## What Gets Written
-
-When the walker reaches a freed `eventpoll`, what matters is the layout. 
 
 ```
 struct eventpoll {
@@ -166,9 +163,9 @@ struct eventpoll {
 };
 ```
 
-200 bytes, lives in `kmalloc-256` (order-1 slabs, 32 objects per slab, `cpu_partial=52` on this device). With `init_on_free=1` is set by default on Frankel devices. Android adds custom padding at the end of each object therefore the structure is different from mainline linux a bit.
+`struct eventpoll` lives in `kmalloc-256` (order-1 slabs, 32 objects per slab, `cpu_partial=52` on this device). `init_on_free=1` is set by default on Frankel devices and Android adds custom padding at the end of each object therefore the structure is different from mainline linux a bit.
 
-What's at offset 176 when the walker arrives decides everything:
+Since the traversal of `refs.first` is at offset 176, this is our target offset, which is critical as my main attempt to exploit this as a one shot w/o any infoleaks: 
 
 If it's **zero** (the `init_on_free` case), the hlist looks empty. The walker skips the loop, writes `loop_check_gen` at 168 and a zero byte at 184, returns. Silent corruption of 9 bytes in whatever object gets reused.
 
@@ -176,21 +173,23 @@ If it's **nonzero**, the walker follows it as a pointer to an `epitem`, computes
 
 If you can grab the object where you control offset 176, you steer the recursion. Each level writes `loop_check_gen` (a global u64 counter that increments per `epoll_ctl(ADD)`) and a zero byte at fixed offsets from the pointer target. That's a constrained write primitive. What you do with it from there depends on what `kmalloc-256` object you use for reclaim, and how creative you're feeling.
 
-
 Note:
 There are other paths I did not include in this blog. One of them leads to `mutex_unlock` that if you are careful and brave enough to walk into. They require tremendous memory pressure and some of them might be fruitful.
+Trivia: We also control and `gen` and `loop_check_depth` which allows to zero out (or write somewhat deterministically yet very slowly) a controlled value to the freed chunk.
 
 ---
 
 ## Can You Cross-Cache This?
 
-I wanted to exploit this vuln as one primitive and wanted to do this using PTE corruption, my attempts failed, but this was my strategy. 
+I wanted to exploit this vuln as one shot primitive and wanted to do this using PTE corruption, my attempts failed, but this was my strategy. 
+If I were to infoleak, I'd use a different primitive and then solve everything pretty easily with `refs.first` as a pointer.
+Note: This part is technical. If you are not familiar with PCPs, Page Table Entries or SLUB / Buddy internals, I encourage you to read about them before you try reading this part. 
 
 The freed objects goes into `kmalloc-256` and uses order-1 slabs. ARM64 PTE pages are order-0 (4 KB). These sit on different PCP freelists. The order-1 page freed from the slab cache won't satisfy an order-0 PTE request unless PCP overflows and buddy splits it. Arranging that overflow during the narrow race window turned out to be non-trivial. It was possible to perform the split w/o invoking the race, however, integrating both pieces together was never a succeess.
 
-These pieces work separately. Shaping 244 out of 250 slab pages go to buddy with 16 children forking and faulting 8 GB each, all available UNMOVABLE order-1 gets split for PTE allocations. The slab2buddy transition works, the buddy2PTE transition works, the problem is combining them with the race. The walker finishes in about 2 ms. The full cross-cache pipeline, SLUB discard, PCP drain, buddy insertion, PTE allocation with `__GFP_ZERO` takes on the order of 100 ms. The gen write needs to land on a physical page that has *already* completed the transition from slab to PTE, and those timelines don't overlap. I couldn't find a way to stretch the walk long enough without resorting to `SCHED_FIFO` or similar privileged tricks, which defeats the purpose.
+These pieces work separately. Shaping 244 out of 250 slab pages go to buddy with 16 children forking and faulting 8 GB each, all available UNMOVABLE order-1 gets split for PTE allocations. The slab2buddy transition works, the buddy2PTE transition works, the problem is combining them with the race. The walker finishes in about 2 ms. The full cross cache pipeline, SLUB discard, PCP drain, buddy insertion, PTE allocation with `__GFP_ZERO` takes on the order of 100 ms. The gen write needs to land on a physical page that has *already* completed the transition from slab to PTE, and those timelines don't overlap. I couldn't find a way to stretch the walk long enough without resorting to `SCHED_FIFO` or similar privileged tricks, which defeats the purpose.
 
-Same-cache reclaim ignores this entirely. SLUB's per-CPU freelist is LIFO: last freed, first allocated. An immediate `kmalloc(256)` on the same CPU gets you the exact slot. The hard part is finding a `kmalloc-256` object with a useful layout at offsets 168 and 176.
+Same-cache reclaim ignores this entirely. SLUB's per-CPU freelist is LIFO: last freed, first allocated. An immediate `kmalloc(256)` on the same CPU gets you the exact slot. The hard part is finding a `kmalloc-256` object with a useful layout at offsets 168 and 176, I did not invest too much time into this.
 
 ---
 
