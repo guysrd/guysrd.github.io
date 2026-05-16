@@ -185,7 +185,6 @@ I wanted to exploit this vuln as one shot primitive and wanted to do this using 
 If I were to infoleak, I'd use a different primitive and then solve everything pretty easily with `refs.first` as a pointer.
 Note: This part is technical. If you are not familiar with PCPs, Page Table Entries or SLUB / Buddy internals, I encourage you to read about them before you try reading this part. 
 
-![Cross-cache vs same-cache reclaim paths](3.svg)
 
 The freed objects goes into `kmalloc-256` and uses order-1 slabs. ARM64 PTE pages are order-0 (4 KB). These sit on different PCP freelists. The order-1 page freed from the slab cache won't satisfy an order-0 PTE request unless PCP overflows and buddy splits it. Arranging that overflow during the narrow race window turned out to be non-trivial. It was possible to perform the split w/o invoking the race, however, integrating both pieces together was never a succeess.
 
