@@ -185,6 +185,8 @@ I wanted to exploit this vuln as one shot primitive and wanted to do this using 
 If I were to infoleak, I'd use a different primitive and then solve everything pretty easily with `refs.first` as a pointer.
 Note: This part is technical. If you are not familiar with PCPs, Page Table Entries or SLUB / Buddy internals, I encourage you to read about them before you try reading this part. 
 
+![Cross-cache vs same-cache reclaim paths](3.svg)
+
 The freed objects goes into `kmalloc-256` and uses order-1 slabs. ARM64 PTE pages are order-0 (4 KB). These sit on different PCP freelists. The order-1 page freed from the slab cache won't satisfy an order-0 PTE request unless PCP overflows and buddy splits it. Arranging that overflow during the narrow race window turned out to be non-trivial. It was possible to perform the split w/o invoking the race, however, integrating both pieces together was never a succeess.
 
 These pieces work separately. Shaping 244 out of 250 slab pages go to buddy with 16 children forking and faulting 8 GB each, all available UNMOVABLE order-1 gets split for PTE allocations. The slab2buddy transition works, the buddy2PTE transition works, the problem is combining them with the race. The walker finishes in about 2 ms. The full cross cache pipeline, SLUB discard, PCP drain, buddy insertion, PTE allocation with `__GFP_ZERO` takes on the order of 100 ms. The gen write needs to land on a physical page that has *already* completed the transition from slab to PTE, and those timelines don't overlap. I couldn't find a way to stretch the walk long enough without resorting to `SCHED_FIFO` or similar privileged tricks, which defeats the purpose.
