@@ -2,6 +2,8 @@ title: ""
 description: ""
 theme: minima
 markdown: kramdown
+plugins:
+  - jekyll-feed
 show_excerpts: false
 header_pages:
   - index.md
