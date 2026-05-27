@@ -1,6 +1,5 @@
 binder.md
 rtmutex.md
-futex.md
 userfault.md
 userfault_poc.c
 _drafts/
