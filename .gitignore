@@ -1,8 +1,9 @@
 binder.md
 rtmutex.md
 futex.md
-futex_stack.svg
-futex_uaf.svg
+userfault.md
+userfault_poc.c
+_drafts/
 _site/
 .bundle/
 vendor/
