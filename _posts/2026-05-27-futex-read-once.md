@@ -27,17 +27,14 @@ That fast path "lock acquired atomically, just wake the waiter" is where the bug
 Our post today focuses on a bug that is caused by a missing `READ_ONCE` in a function called `requeue_pi_wake_futex`, however, unlike classical use after free bugs that are on the heap our bug is caused by an esoteric state on the stack. 
 This is a techie post, so bear in mind with me that you need technical background here. If you don't know futex's internal or never tried exploiting towelroot yourself, I recommend that you try it and then go back here. 
 
-I found this while studying two recent futex patches [210d36d892de](https://git.kernel.org/pub/scm/linux/kernel/git/tip/tip.git/commit/?id=210d36d892de5195e6766c45519dfb1e65f3eb83): a stale pointer surviving a `goto retry` in the PI lock path 
-and [bc7304f3ae20](https://git.kernel.org/pub/scm/linux/kernel/git/tip/tip.git/commit/?id=bc7304f3ae20972d11db6e0b1b541c63feda5f05): a livelock when a timed-out waiter can't grab the hash bucket lock. 
-That's our story today.
-
 ---
 
 ## The bug.
 
-The bug is in `requeue_pi_wake_futex` and hard to spot, `q` is a variable on the stack of the waiter's call, it occurs exactly when you signal the waiter that the lock is acquired and then try to read from `q` on the next line — but the waiter already saw the signal, returned from its syscall, and its stack frame is gone.
+The bug is in `requeue_pi_wake_futex` and hard to spot, `q` is a variable on the stack of the waiter's call, 
+it occurs exactly when you signal the waiter that the lock is acquired and then try to read from `q` on the next line but the waiter already saw the signal returned from its syscall and its stack frame is gone.
 The function is called by the requeuer when the PI lock was acquired atomically on behalf of the waiter its job is to clean up the queue entry and wake the waiter
-Take a few moments to read the comments and the code itself, can you spot the bug? 
+Given all this information, can you spot the bug? :')
 
 ```c
 /**
@@ -88,11 +85,9 @@ void requeue_pi_wake_futex(struct futex_q *q, union futex_key *key,
 
 ```
 
-If you did not find it, that's OK. It's too subtle for someone who just dropped into this problem. 
-Let's walk the stages written in the comments step by step, stay with me as this is techie.
+If you did not find it, that's OK. This isn't a classical allocate, free, use bug pattern. There is no `kmalloc` here or `kfree` at all.
 
-We have two threads. CPU1 (the requeuer) is running `requeue_pi_wake_futex`. 
-CPU0 (the waiter) is sleeping inside `futex_wait_requeue_pi`, with `struct futex_q q` on its kernel stack.
+We have two theads CPU1 (the requeuer) is running `requeue_pi_wake_futex` and CPU0 (the waiter) is sleeping inside `futex_wait_requeue_pi`, with `struct futex_q q` on its kernel stack.
 1. `q->key = *key` the requeuer overwrites the waiter's futex key to point at the requeue target (`uaddr2`) instead of the original condvar (`uaddr1`). This is so when the waiter wakes up it knows which futex it was moved to.
 
 2. `__futex_unqueue(q)` removes `q` from the hash bucket's wait queue. After this no other `futex_wake` call can find this waiter. It's the requeuer's responsibility to wake it.
@@ -111,7 +106,7 @@ The waiter on CPU0 is spinning on that field with `atomic_cond_read_relaxed`. Th
 Now read step 5 and step 6 again :')
 Step 5 tells the waiter "you have the lock" with an atomic store. 
 The waiter on CPU0 is spinning on that field, the moment it sees LOCKED it can return from its syscall. 
-Step 6 reads `q->task` but `q` lives on the waiter's kernel stack and if the waiter already returned that stack frame is gone the requeuer is reading from dead memory. Boom.
+Step 6 reads `q->task` but `q` lives on the WAITER's kernel stack and if the waiter already returned that stack frame is gone the requeuer is reading from an unknown memory. Boom.
 
 ---
 
@@ -120,7 +115,7 @@ Step 6 reads `q->task` but `q` lives on the waiter's kernel stack and if the wai
 The previous section showed the requeuer's side what `requeue_pi_wake_futex` does, but this is only part of the magic,
 Why can the waiter return so fast that it beats the requeuer to step 6?
 
-The race only works because the waiter can return *without acquiring any locks*. That happens when `q->pi_state` is NULL.
+The race only works because the waiter can return *without acquiring any locks* this happens when `q->pi_state` is NULL.
 
 The requeuer calls `futex_requeue_pi_prepare(top_waiter, NULL)` NULL because this is the atomic trylock path, no `pi_state` was created. When the waiter sees LOCKED:
 
@@ -135,13 +130,13 @@ case Q_REQUEUE_PI_LOCKED:
     break;
 ```
 
-`pi_state` is NULL. The entire block is skipped. The waiter cancels its timer and returns.
+`pi_state` is NULL. The entire block is skipped. The waiter cancels its timer and returns. 
 
 ---
 
 ## The race
 
-So now we have a clear understanding of the bugs itself in both the requeuer and the waiter, here is what actually happens with 2 CPUs. 
+So now we have a clear understanding of the bug itself in both the requeuer and the waiter, here is what actually happens with 2 CPUs. 
 
 
 ```
