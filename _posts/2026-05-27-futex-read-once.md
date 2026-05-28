@@ -188,7 +188,24 @@ A third thread on a third CPU calls `mprotect` on a shared mapping in a tight lo
 Each `mprotect` sends an IPI to every CPU that has the page in its TLB. 
 If the requeuer's CPU has it cached, it takes the interrupt. Most calls miss the one-instruction window, but eventually you manage to win the race.
 
-![Stack frame lifecycle during the race](/futex_stack.svg)
+```
+  waiter sleeping            waiter returned             spray
+  ┌──────────────────┐       ┌──────────────────┐       ┌──────────────────┐
+  │futex_wait_requeue│       │  (returned)       │       │                  │
+  │                  │       │                   │       │                  │
+  │ struct futex_q   │       │ struct futex_q    │       │ spray data       │
+  │  q.task = current│ ───→  │  q.task = stale   │ ───→  │  fake task_struct*│
+  │                  │       │                   │       │                  │
+  │ rt_waiter        │       │ garbage           │       │ controlled       │
+  │ timeout          │       │ garbage           │       │ controlled       │
+  └──────────────────┘       └──────────────────┘       └──────────────────┘
+  q is alive                 q is dead                   old q.task overwritten
+  requeuer can read          data still in memory         requeuer reads fake ptr
+
+  ─────────────────────────────────────────────────────────────────────────→
+  requeuer: complete(q,1)    requeuer: INTERRUPTED        requeuer: wake_up_state(q->task)
+                             ← interrupt window: 1-10μs →
+```
 
 However, when the interrupt lands the dead stack frame still contains the **original valid** `q->task` value `current`, set by `__futex_queue` when the waiter first enqueued. 
 If the requeuer reads that `wake_up_state` just wakes the waiter again. 
