@@ -110,8 +110,7 @@ CPU1 (the requeuer) is running `requeue_pi_wake_futex`. CPU0 (the waiter) called
 3. `q->rt_waiter = NULL` clears the RT waiter pointer. The waiter checks this field when it wakes up, if it's NULL the waiter knows the lock was acquired atomically and there's no `rt_mutex_waiter` to clean up.
 
 4. `q->lock_ptr = &hb->lock` points the waiter's lock pointer at the target hash bucket's lock. If the waiter needs to do PI state fixup later it will take this lock to serialize with the requeuer.
-
-The waiter is still asleep through all of this. These four steps are safe.
+	The waiter is still asleep through all of this. These four steps are safe.
 
 5. `futex_requeue_pi_complete(q, 1)` is an atomic store that sets `q->requeue_state = Q_REQUEUE_PI_LOCKED`. 
 The waiter on CPU0 is spinning on that field with `atomic_cond_read_relaxed`. The moment it sees LOCKED it can proceed. The comment in the source says it plainly: "After this point the waiter task can return from the syscall immediately."
