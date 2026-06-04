@@ -1,35 +1,50 @@
 ---
 layout: post
 title: "The futex READ_ONCE"
-date: 2026-05-27
+date: 2026-06-04
 permalink: /futex-read-once
-published: false
+published: true
 ---
 
-The futex subsystem is the foundation of every lock, condition variable, and semaphore on Linux. Every `pthread_mutex_lock` you've ever called goes through it. 
-It is very rare to see bugs in the futex subsystem. The futex subsystem is very complex and heavily maintained by Thomas. 
-The thing about futex is that it has a special execution path that is entirely in usermode and atomic (just a simple cmpxcgh), 
-the kernel only gets involved when a thread needs to sleep or wake up.
-Having such a rare and complex subsystem to look bugs in is non trivial, while futex had bugs I never fully understood them, 
-it took me months to dive into them and I sometime just gave up, thinking these things not exploitable, while rumors said they were.
-
----
-
-## Futex in 30 seconds
-
-A futex is a 32b integer in userspace memory. Uncontended operations are pure userspace atomic ops the kernel is only involved when someone needs to sleep or wake up. PI futexes add priority inheritance: the futex word stores the owner's TID, and the kernel boosts the holder's priority when a higher priority thread is waiting.
+A futex is a 32b integer in userspace memory. Uncontended operations are pure userspace atomic ops the kernel is only involved when someone needs to sleep or wake up. PI futexes add priority inheritance, futex word stores the owner's TID, and the kernel boosts the holder's priority when a higher priority thread is waiting.
 
 If you've ever done pwnable.kr and worked on towelroot, you probably remember `FUTEX_CMP_REQUEUE_PI`. 
-This is how `pthread_cond_signal` works under the hood: a waiter sleeps on a condition variable (`uaddr1`), and when signaled, the kernel moves it to a PI mutex's wait queue (`uaddr2`). 
+This is how `pthread_cond_signal` works under the hood. The `FUTEX_CMP_REQUEUE_PI` syscall takes two userspace addresses: `uaddr1` is the condition variable's futex and `uaddr2` is the PI mutex's futex. A waiter sleeps on `uaddr1` and when signaled the kernel moves it to the wait queue behind `uaddr2`. 
 If the mutex is uncontested, the kernel can acquire it atomically on behalf of the waiter and skip the requeue entirely. 
 That fast path "lock acquired atomically, just wake the waiter" is where the bug is.
 
-Our post today focuses on a bug that is caused by a missing `READ_ONCE` in a function called `requeue_pi_wake_futex`, however, unlike classical use after free bugs that are on the heap our bug is caused by an esoteric state on the stack. 
-This is a techie post, so bear in mind with me that you need technical background here. If you don't know futex's internal or never tried exploiting towelroot yourself, I recommend that you try it and then go back here. 
+It is very rare to see any bugs in this subsystem, having great maintainers like Thomas Gleixner that understand the mechanism
+deep enough requires deep understanding of futex itself.
+it took me months to dive into them and I sometime just gave up.
 
 ---
 
-## The bug.
+## The bug 
+
+Our post today focuses on a bug that is caused by a missing `READ_ONCE` in a function called `requeue_pi_wake_futex`, however, unlike classical use after free bugs that are on the heap our bug is caused by an esoteric state on the stack. 
+
+Here is what happens during a `pthread_cond_signal` with a PI mutex. 
+Two threads are involved, a waiter and a requeuer:
+
+```
+  waiter                                    requeuer
+  ──────                                    ────────
+  pthread_cond_wait(cond, mutex)
+    futex(FUTEX_WAIT_REQUEUE_PI,
+          cond, mutex)
+      enqueue on cond's wait queue
+      go to sleep, blocked in kernel
+      ...                                   pthread_cond_signal(cond)
+      ...                                     futex(FUTEX_CMP_REQUEUE_PI,
+      ...                                           cond, mutex)
+      ...                                       try to acquire mutex for waiter
+      ...                                       if acquired:
+      ...                                         requeue_pi_wake_futex(q)
+      ...                                           signal waiter, wake it up
+      wakes up, returns to userspace
+```
+
+The waiter is the thread that called `pthread_cond_wait`. It enters the kernel and goes to sleep on the condition variable's futex. The requeuer is the thread that called `pthread_cond_signal`. It enters the kernel and tries to move the waiter onto the mutex. If the mutex is free the requeuer acquires it on behalf of the waiter and calls `requeue_pi_wake_futex` to let the waiter know.
 
 The bug is in `requeue_pi_wake_futex` and hard to spot, `q` is a variable on the stack of the waiter's call, 
 it occurs exactly when you signal the waiter that the lock is acquired and then try to read from `q` on the next line but the waiter already saw the signal returned from its syscall and its stack frame is gone.
@@ -87,8 +102,8 @@ void requeue_pi_wake_futex(struct futex_q *q, union futex_key *key,
 
 If you did not find it, that's OK. This isn't a classical allocate, free, use bug pattern. There is no `kmalloc` here or `kfree` at all.
 
-We have two theads CPU1 (the requeuer) is running `requeue_pi_wake_futex` and CPU0 (the waiter) is sleeping inside `futex_wait_requeue_pi`, with `struct futex_q q` on its kernel stack.
-1. `q->key = *key` the requeuer overwrites the waiter's futex key to point at the requeue target (`uaddr2`) instead of the original condvar (`uaddr1`). This is so when the waiter wakes up it knows which futex it was moved to.
+CPU1 (the requeuer) is running `requeue_pi_wake_futex`. CPU0 (the waiter) called `futex_wait_requeue_pi` and is blocked in the kernel waiting for someone to signal it, with `struct futex_q q` declared as a local variable on its kernel stack.
+1. `q->key = *key` the requeuer overwrites the waiter's futex key to point at the requeue target (`uaddr2`) instead of the original condition variable (`uaddr1`). When the waiter eventually wakes up it checks this key to know which futex it was moved to.
 
 2. `__futex_unqueue(q)` removes `q` from the hash bucket's wait queue. After this no other `futex_wake` call can find this waiter. It's the requeuer's responsibility to wake it.
 
