@@ -11,20 +11,36 @@
     </ul>
   </nav>
 </aside>
-<button class="sidebar-toggle" id="sidebar-toggle" aria-label="Toggle post list">Posts</button>
-<div class="sidebar-backdrop" id="sidebar-backdrop"></div>
+
+<dialog class="posts-sheet" id="posts-sheet">
+  <div class="posts-sheet-header">
+    <span>Posts</span>
+    <button class="posts-sheet-close" id="posts-sheet-close" aria-label="Close">&times;</button>
+  </div>
+  <ul class="posts-sheet-list">
+    {%- for post in site.posts -%}
+      <li {% if page.url == post.url %}class="current"{% endif %}>
+        <a href="{{ post.url | relative_url }}">{{ post.title }}</a>
+        <span class="posts-sheet-date">{{ post.date | date: "%b %Y" }}</span>
+      </li>
+    {%- endfor -%}
+  </ul>
+</dialog>
+
 <script>
 (function() {
-  var toggle = document.getElementById('sidebar-toggle');
-  var sidebar = document.getElementById('post-sidebar');
-  var backdrop = document.getElementById('sidebar-backdrop');
-  toggle.addEventListener('click', function() {
-    sidebar.classList.toggle('open');
-    backdrop.classList.toggle('open');
+  var trigger = document.getElementById('posts-bar-trigger');
+  var sheet = document.getElementById('posts-sheet');
+  var closeBtn = document.getElementById('posts-sheet-close');
+  if (!trigger || !sheet) return;
+  trigger.addEventListener('click', function() {
+    sheet.showModal();
   });
-  backdrop.addEventListener('click', function() {
-    sidebar.classList.remove('open');
-    backdrop.classList.remove('open');
+  closeBtn.addEventListener('click', function() {
+    sheet.close();
+  });
+  sheet.addEventListener('click', function(e) {
+    if (e.target === sheet) sheet.close();
   });
 })();
 </script>
