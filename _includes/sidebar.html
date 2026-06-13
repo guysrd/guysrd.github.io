@@ -1,0 +1,30 @@
+<aside class="post-sidebar" id="post-sidebar">
+  <nav>
+    <h3>Posts</h3>
+    <ul>
+      {%- for post in site.posts -%}
+        <li {% if page.url == post.url %}class="current"{% endif %}>
+          <a href="{{ post.url | relative_url }}">{{ post.title }}</a>
+          <span class="sidebar-date">{{ post.date | date: "%b %Y" }}</span>
+        </li>
+      {%- endfor -%}
+    </ul>
+  </nav>
+</aside>
+<button class="sidebar-toggle" id="sidebar-toggle" aria-label="Toggle post list">Posts</button>
+<div class="sidebar-backdrop" id="sidebar-backdrop"></div>
+<script>
+(function() {
+  var toggle = document.getElementById('sidebar-toggle');
+  var sidebar = document.getElementById('post-sidebar');
+  var backdrop = document.getElementById('sidebar-backdrop');
+  toggle.addEventListener('click', function() {
+    sidebar.classList.toggle('open');
+    backdrop.classList.toggle('open');
+  });
+  backdrop.addEventListener('click', function() {
+    sidebar.classList.remove('open');
+    backdrop.classList.remove('open');
+  });
+})();
+</script>

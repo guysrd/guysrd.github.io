@@ -78,3 +78,121 @@ body.dark img { filter: brightness(0.9); }
 .theme-switch.active .theme-switch-thumb {
   transform: translateX(26px);
 }
+
+/* --- Sidebar --- */
+.layout-with-sidebar {
+  display: flex;
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 0 15px;
+  gap: 2rem;
+}
+.layout-with-sidebar > .wrapper {
+  flex: 1;
+  min-width: 0;
+  max-width: none;
+  padding: 0;
+}
+.post-sidebar {
+  width: 200px;
+  flex-shrink: 0;
+  position: sticky;
+  top: 20px;
+  align-self: flex-start;
+  padding-top: 30px;
+}
+.post-sidebar h3 {
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 0.8rem;
+  color: #555;
+}
+.post-sidebar ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.post-sidebar li {
+  margin-bottom: 0.6rem;
+}
+.post-sidebar li a {
+  font-size: 0.85rem;
+  text-decoration: none;
+}
+.post-sidebar li.current a {
+  font-weight: bold;
+}
+.post-sidebar .sidebar-date {
+  display: block;
+  font-size: 0.7rem;
+  color: #999;
+}
+.sidebar-toggle {
+  display: none;
+}
+.sidebar-backdrop {
+  display: none;
+}
+
+/* Dark mode sidebar */
+body.dark .post-sidebar h3 { color: #888; }
+body.dark .post-sidebar li a { color: #5bf; }
+body.dark .post-sidebar li a:visited { color: #6bf; }
+body.dark .post-sidebar .sidebar-date { color: #666; }
+
+/* Mobile */
+@media screen and (max-width: 768px) {
+  .layout-with-sidebar {
+    display: block;
+    padding: 0 15px;
+  }
+  .post-sidebar {
+    position: fixed;
+    top: 0;
+    right: -260px;
+    width: 240px;
+    height: 100%;
+    background: #fff;
+    padding: 20px;
+    box-shadow: -2px 0 8px rgba(0,0,0,0.15);
+    z-index: 1000;
+    overflow-y: auto;
+    transition: right 0.25s ease;
+  }
+  .post-sidebar.open {
+    right: 0;
+  }
+  body.dark .post-sidebar {
+    background: #1a1a1a;
+    box-shadow: -2px 0 8px rgba(0,0,0,0.5);
+  }
+  .sidebar-toggle {
+    display: block;
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    z-index: 999;
+    background: #333;
+    color: #fff;
+    border: none;
+    padding: 8px 16px;
+    border-radius: 20px;
+    font-size: 0.8rem;
+    cursor: pointer;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+  }
+  .sidebar-backdrop {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0,0,0,0.4);
+    z-index: 999;
+  }
+  .sidebar-backdrop.open {
+    display: block;
+  }
+}
