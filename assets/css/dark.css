@@ -143,6 +143,9 @@ body.dark .post-sidebar .sidebar-date { color: #666; }
 
 /* Mobile */
 @media screen and (max-width: 768px) {
+  html, body {
+    overflow-x: hidden;
+  }
   .layout-with-sidebar {
     display: block;
     padding: 0 15px;
@@ -150,21 +153,24 @@ body.dark .post-sidebar .sidebar-date { color: #666; }
   .post-sidebar {
     position: fixed;
     top: 0;
-    right: -260px;
+    right: -280px;
     width: 240px;
     height: 100%;
     background: #fff;
     padding: 20px;
-    box-shadow: -2px 0 8px rgba(0,0,0,0.15);
+    box-shadow: none;
     z-index: 1000;
     overflow-y: auto;
     transition: right 0.25s ease;
   }
   .post-sidebar.open {
     right: 0;
+    box-shadow: -2px 0 8px rgba(0,0,0,0.15);
   }
   body.dark .post-sidebar {
     background: #1a1a1a;
+  }
+  body.dark .post-sidebar.open {
     box-shadow: -2px 0 8px rgba(0,0,0,0.5);
   }
   .sidebar-toggle {
