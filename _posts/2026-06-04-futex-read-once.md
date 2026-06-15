@@ -17,6 +17,17 @@ It is very rare to see any bugs in this subsystem, having great maintainers like
 deep enough requires deep understanding of futex itself.
 it took me months to dive into them and I sometime just gave up.
 
+<details style="font-size: 0.75rem; color: #888; margin-top: 0.5rem;">
+<summary>LLM Technical summary</summary>
+
+A stack use after free caused by a missing `READ_ONCE` in `requeue_pi_wake_futex` in the Linux kernel futex subsystem. The function signals the waiter via `futex_requeue_pi_complete(q, 1)` (atomic store) then reads `q->task` on the next line, but `q` is a `struct futex_q` on the waiter's kernel stack. After the atomic store the waiter can see the LOCKED state, skip PI fixup (because `q->pi_state` is NULL on the atomic trylock path), and return from its syscall before the requeuer reads `q->task`. The requeuer then dereferences a dead stack frame.
+
+The race is one instruction wide. Triggerable from unprivileged userspace using TLB shootdown IPIs via `mprotect` on a third CPU to interrupt the requeuer between the atomic store and the pointer load. The waiter's next syscall can spray controlled data at the old `q->task` offset. `wake_up_state` calls `try_to_wake_up` on the fake `task_struct` pointer, which under the right field layout reaches `enqueue_task_fair` and performs `cfs_rq->load.weight += se->load.weight`, an 8 byte addition through a controlled pointer with a controlled value.
+
+The fix adds `task = READ_ONCE(q->task)` before the `futex_requeue_pi_complete` store, capturing the pointer while the stack frame is still live.
+
+</details>
+
 ---
 
 ## The bug 
