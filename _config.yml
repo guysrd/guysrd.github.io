@@ -5,6 +5,8 @@ markdown: kramdown
 plugins:
   - jekyll-feed
 show_excerpts: false
+include:
+  - llms.txt
 exclude:
   - vendor
 header_pages:

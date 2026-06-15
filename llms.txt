@@ -1,0 +1,12 @@
+---
+layout: null
+---
+
+# {{ site.title | default: "guysrd" }}
+
+> Linux kernel security research blog. Posts cover vulnerability analysis, exploitation techniques and kernel internals.
+
+## Posts
+
+{% for post in site.posts %}- [{{ post.title }}](https://raw.githubusercontent.com/guysrd/guysrd.github.io/main/{{ post.path }}): {{ post.title }}
+{% endfor %}
