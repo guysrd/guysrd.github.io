@@ -28,8 +28,6 @@ The fix adds `task = READ_ONCE(q->task)` before the `futex_requeue_pi_complete` 
 
 </details>
 
----
-
 ## The bug 
 
 Our post today focuses on a bug that is caused by a missing `READ_ONCE` in a function called `requeue_pi_wake_futex`, however, unlike classical use after free bugs that are on the heap our bug is caused by an esoteric state on the stack. 
